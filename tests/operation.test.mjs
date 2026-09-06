@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { analyze, required } from '../server/analysis.mjs';
 import { hashPassword, verifyPassword } from '../server/db.mjs';
+import { geographicBounds } from '../server/maps.mjs';
 import {
   createApi,
   send,
@@ -40,6 +41,45 @@ const baseline = {
     required.map((k) => [k, 'Premissa sintética de teste']),
   ),
 };
+test('referência municipal usa limites geográficos e não cria um ponto do imóvel', () => {
+  assert.deepEqual(
+    geographicBounds({
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [-55.3, -28.2],
+                [-54.9, -28.2],
+                [-54.9, -27.9],
+                [-55.3, -28.2],
+              ],
+            ],
+          },
+        },
+      ],
+    }),
+    [
+      [-28.2, -55.3],
+      [-27.9, -54.9],
+    ],
+  );
+  assert.throws(() => geographicBounds({ type: 'Polygon', coordinates: [] }));
+  assert.throws(() =>
+    geographicBounds({
+      type: 'Polygon',
+      coordinates: [
+        [
+          [999, 95],
+          [0, 0],
+          [1, 1],
+        ],
+      ],
+    }),
+  );
+});
 test('Price, horizonte de 12 meses e cenário adverso preservam valores e zeros', () => {
   const a = analyze(baseline, [{ status: 'reviewed' }]);
   assert.equal(a.status, 'calculated');
@@ -433,6 +473,97 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
       ).status,
       409,
     );
+    const view = await call('/producers/' + pid + '/overview');
+    assert.equal(view.status, 200, JSON.stringify(view));
+    assert.equal(view.body.producer.id, pid);
+    assert.equal(view.body.properties.length, 1);
+    assert.equal(view.body.documents.length, 1);
+    assert.ok(view.body.requests.every((r) => r.producer_id === pid));
+    assert.ok(view.body.analyses.some((a) => a.id === latest.body.id));
+    assert.equal(view.body.decisions.length, 1);
+    assert.equal(view.body.documents[0].content, undefined);
+    assert.equal(view.body.documents[0].extracted_text, undefined);
+    assert.ok(
+      view.body.history.every((event) => event.entity_id !== p2.body.id),
+    );
+    const secondProducerView = await call(
+      '/producers/' + p2.body.id + '/overview',
+    );
+    assert.equal(secondProducerView.status, 200);
+    for (const key of [
+      'properties',
+      'requests',
+      'documents',
+      'analyses',
+      'decisions',
+    ])
+      assert.equal(
+        secondProducerView.body[key].length,
+        0,
+        key + ' não mistura produtores',
+      );
+    assert.equal((await call('/producers/inexistente/overview')).status, 404);
+    assert.equal(
+      (await call('/producers/' + pid + '/overview', 'GET', null, null)).status,
+      401,
+    );
+    const locationPath = '/properties/' + property.body.id + '/location';
+    const pin = {
+      latitude: -28.1234567,
+      longitude: -54.2345678,
+      expected_latitude: -28,
+      expected_longitude: -54,
+      name: 'Não sobrescrever cadastro',
+    };
+    assert.equal(
+      (await call(locationPath, 'PATCH', pin, 'viewer')).status,
+      403,
+    );
+    assert.equal(
+      (await call(locationPath, 'PATCH', { latitude: 12, longitude: 30 }))
+        .status,
+      400,
+    );
+    assert.equal(
+      (await call(locationPath, 'PATCH', { ...pin, latitude: 91 })).status,
+      400,
+    );
+    const previousRevision = (await call('/requests/' + rid)).body.request
+      .revision;
+    assert.equal(
+      (await call(locationPath, 'PATCH', pin, 'analyst')).status,
+      200,
+    );
+    assert.equal(
+      (await call(locationPath, 'PATCH', pin, 'analyst')).status,
+      409,
+      'Pin antigo não sobrescreve gravação concorrente',
+    );
+    const afterPin = (await call('/producers/' + pid + '/overview')).body;
+    assert.equal(afterPin.properties[0].name, 'IMÓVEL DE TESTE');
+    assert.equal(Number(afterPin.properties[0].area_ha), 100);
+    assert.equal(Number(afterPin.properties[0].latitude), pin.latitude);
+    assert.equal(
+      afterPin.requests.find((r) => r.id === rid).revision,
+      previousRevision + 1,
+    );
+    const locationAudit = afterPin.history.find(
+      (event) => event.action === 'location_updated',
+    );
+    assert.deepEqual(locationAudit.detail.before, {
+      latitude: -28,
+      longitude: -54,
+    });
+    assert.equal(locationAudit.detail.after.longitude, pin.longitude);
+    assert.equal(
+      Number(
+        (await call('/requests/' + rid)).body.analyses.find(
+          (a) => a.id === latest.body.id,
+        ).snapshot.properties[0].latitude,
+      ),
+      -28,
+      'Snapshot antigo preserva localização anterior',
+    );
     const audit = (await call('/audit')).body;
     for (const action of [
       'upload',
@@ -477,6 +608,13 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
     await engine.close();
     engine = new PGlite(dir);
     const persisted = (await call('/requests/' + rid)).body;
+    assert.equal(
+      Number(
+        (await call('/producers/' + pid + '/overview')).body.properties[0]
+          .latitude,
+      ),
+      pin.latitude,
+    );
     assert.equal(persisted.documents[0].sha256, detail.documents[0].sha256);
     assert.equal(persisted.request.data.principal, 120000);
     assert.equal(persisted.decisions.length, 1);

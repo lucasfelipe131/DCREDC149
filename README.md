@@ -8,10 +8,29 @@ separada em `/?demo=1`, identificada como fictícia e sem gravação no banco.
 
 A interface operacional utiliza a composição original do Dossiê Rural: menu
 azul-escuro recolhível, etapas no topo, resumo da operação e painéis de mapa,
-propriedade, evidência documental e viabilidade. O painel de mapa exibe somente
-pontos cadastrados, com abertura do mapa-base OpenStreetMap e acesso ao satélite
-no Google Maps. Sem coordenadas ou documentos, apresenta o estado vazio
-correspondente; os exemplos fictícios permanecem apenas na apresentação separada.
+propriedade, evidência documental e viabilidade. A visão do produtor reúne seu
+cadastro, todas as propriedades, solicitações, documentos, fontes financeiras,
+pendências e histórico, inclusive quando ainda não existe solicitação. O seletor
+mantém os dados do produtor escolhido separados dos demais. A ficha atual pode
+ser impressa para preparar a apresentação ao comitê, sem substituir o snapshot
+do dossiê de uma análise.
+
+O mapa interativo abre mesmo sem coordenadas. No cadastro da propriedade,
+informar município/UF e sair do campo inicia a consulta de referência municipal
+no IBGE. O usuário escolhe o município quando houver homônimos, marca o pin por
+clique, ajusta por arraste e salva as coordenadas no próprio cadastro. Na visão
+geral, também é possível marcar/ajustar o pin sem sair da página. O município
+serve somente para enquadrar a região: seu centro ou seus limites nunca são
+salvos como localização ou perímetro do imóvel. Pontos não medem hectares.
+
+Base cartográfica: OpenStreetMap, com atribuição visível, cache normal do navegador
+e Referer de origem; sem download em lote ou mapa offline. Referências municipais
+usam as APIs de [localidades](https://servicodados.ibge.gov.br/api/docs/localidades)
+e [malhas do IBGE](https://servicodados.ibge.gov.br/api/docs/malhas?versao=3),
+com cache de 24 horas e timeout. Nenhum nome/CPF de produtor ou pin é enviado ao
+IBGE. Falhas da base e da consulta aparecem com possibilidade de tentar novamente;
+coordenadas também podem ser digitadas. Satélite continua disponível pelo link
+externo. [Política dos tiles OSM](https://operations.osmfoundation.org/policies/tiles/).
 
 - Cadastro e edição de produtores (CPF/CNPJ opcional com validação de dígitos).
 - Propriedades, área, posse, município, CAR/matrícula declarados e ponto geográfico.
@@ -30,6 +49,8 @@ correspondente; os exemplos fictícios permanecem apenas na apresentação separ
 ## Fluxo de uso
 
 1. **Produtores → Novo produtor**. Depois, cadastre as **Propriedades**.
+   No cadastro do imóvel, informe o município, escolha o pin no mapa e salve.
+   Clique no nome do produtor ou use o seletor na Visão geral para abrir sua ficha.
 2. **Nova solicitação**: produtor, imóveis, período, finalidade e premissas financeiras.
 3. **Documentos**: envie o arquivo, confira a leitura contra o original e registre
    a conferência. Revise e aplique os campos que realmente pertencem à operação.
@@ -132,3 +153,11 @@ validações, perfis, upload, conferência, aplicação, revisão, parecer e rec
 após reabrir o armazenamento. PDFs e imagens também foram ensaiados com Poppler
 /Tesseract. Isso não garante extração perfeita de qualquer documento: confirme a
 qualidade no original antes de aplicar os valores.
+
+A cobertura inclui a ficha consolidada sem dados de outro produtor, bloqueio da
+gravação de pin pelo perfil de consulta, conflito de atualização da localização,
+auditoria antes/depois, preservação de outros campos e de snapshots anteriores,
+invalidação das análises dependentes e persistência do pin após reabrir o banco.
+O fluxo de pin usa os perfis atuais; a matriz futura de quatro perfis ainda não
+está ativada. Matrículas estruturadas, polígonos, culturas por safra e aceitação de
+garantias não são gerados automaticamente pela ficha.

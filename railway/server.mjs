@@ -23,7 +23,7 @@ const types = {
 };
 const server = http.createServer(async (req, res) => {
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   try {
     if (req.url === '/health') {
       await db.query('SELECT 1');

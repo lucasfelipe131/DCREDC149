@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type CSSProperties, type ReactNode } from 'react';
+import { PropertyMap, pointOf, type Point } from './property-map';
 import {
   AlertTriangle,
   BarChart3,
@@ -403,6 +404,7 @@ export function TechnicalOverview({
   selectedPropertyId,
   onProperty,
   onEditProperty,
+  onSaveLocation,
   onNavigate,
   onStart,
   writable,
@@ -415,6 +417,7 @@ export function TechnicalOverview({
   selectedPropertyId: string;
   onProperty: (id: string) => void;
   onEditProperty: (property: RecordData) => void;
+  onSaveLocation: (property: RecordData, point: Point) => Promise<void>;
   onNavigate: (section: string) => void;
   onStart: () => void;
   writable: boolean;
@@ -423,18 +426,18 @@ export function TechnicalOverview({
   onDoc: (id: string) => void;
 }) {
   const request = detail?.request;
-  const linked = request
-    ? properties.filter((p) => request.property_ids.includes(p.id))
-    : properties;
+  const linked = properties;
   const selected = linked.find((p) => p.id === selectedPropertyId) || linked[0];
   return (
     <>
       <section className="technical-grid">
         <TechnicalMap
+          key={selected?.id || 'empty-map'}
           properties={linked}
           selected={selected}
           onSelect={onProperty}
           onEdit={onEditProperty}
+          onSaveLocation={onSaveLocation}
           onStart={onStart}
           writable={writable}
           hasProducers={hasProducers}
@@ -479,6 +482,7 @@ function TechnicalMap({
   onSelect,
   onEdit,
   onStart,
+  onSaveLocation,
   writable,
   hasProducers,
 }: {
@@ -487,168 +491,124 @@ function TechnicalMap({
   onSelect: (id: string) => void;
   onEdit: (property: RecordData) => void;
   onStart: () => void;
+  onSaveLocation: (property: RecordData, point: Point) => Promise<void>;
   writable: boolean;
   hasProducers: boolean;
 }) {
-  const [position, setPosition] = useState(true),
-    [mapVisible, setMapVisible] = useState(false);
-  const lat = selected?.latitude == null ? null : Number(selected.latitude),
-    lng = selected?.longitude == null ? null : Number(selected.longitude);
-  const located =
-    lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
-  const iframeUrl = located
-    ? 'https://www.openstreetmap.org/export/embed.html?' +
-      new URLSearchParams({
-        bbox: [
-          Math.max(-180, lng - 0.012),
-          Math.max(-85, lat - 0.008),
-          Math.min(180, lng + 0.012),
-          Math.min(85, lat + 0.008),
-        ].join(','),
-        layer: 'mapnik',
-        ...(position ? { marker: lat + ',' + lng } : {}),
-      }).toString()
-    : '';
+  const [editing, setEditing] = useState(false),
+    [draft, setDraft] = useState<Point | null>(null);
+  const [saving, setSaving] = useState(false),
+    [error, setError] = useState('');
+  const point = pointOf(selected);
+  async function save() {
+    if (!selected || !draft || saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      await onSaveLocation(selected, draft);
+      setEditing(false);
+      setDraft(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
   return (
     <article className="panel map-panel">
       <header className="panel-header">
         <div>
-          <h2>
-            Mapa técnico da operação
-            {selected ? ' · ' + selected.municipality : ''}
-          </h2>
+          <h2>Mapa das propriedades do produtor</h2>
           <p>
-            {located
-              ? 'Ponto informado no cadastro · perímetros não importados'
-              : 'Cadastre as coordenadas para localizar a propriedade'}
+            {selected
+              ? selected.name + ' · ' + selected.municipality
+              : 'Cadastre uma propriedade para marcar a localização'}
           </p>
         </div>
-        {located ? (
-          <a
-            className="technical-source-link"
-            href={satelliteUrl(lat!, lng!)}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Layers3 size={15} />
-            Abrir satélite
-          </a>
-        ) : (
-          <button
-            onClick={() => selected && onEdit(selected)}
-            disabled={!selected || !writable}
-          >
-            <MapPin size={15} />
-            Informar localização
-          </button>
-        )}
-      </header>
-      <div
-        className={
-          'map-canvas operational-map' +
-          (mapVisible && located ? ' map-is-open' : '')
-        }
-      >
-        {mapVisible && located && (
-          <iframe
-            key={selected?.id}
-            className="technical-map-frame"
-            title={'Mapa da propriedade ' + selected?.name}
-            src={iframeUrl}
-            loading="lazy"
-            referrerPolicy="no-referrer"
-          />
-        )}
-        <div className="layer-control">
-          <div className="layer-title">
-            <Layers3 size={16} />
-            <strong>Camadas</strong>
-          </div>
-          <label>
-            <Checkbox
-              checked={position}
-              disabled={!located}
-              onCheckedChange={(checked) => setPosition(Boolean(checked))}
-            />
-            <i style={{ background: '#3eab75' }} />
-            <span>Localização</span>
-          </label>
-          {[
-            ['CAR', '#6bbf78'],
-            ['Matrículas', '#e1a92d'],
-            ['SIGEF', '#3c92c6'],
-            ['Área própria', '#3eab75'],
-            ['Área arrendada', '#e8b13b'],
-            ['Penhor', '#8b6fc0'],
-            ['Alienação', '#d37e56'],
-          ].map(([label, color]) => (
-            <label
-              key={label}
-              className="layer-unavailable"
-              title="Camada ainda não conectada"
+        <div className="producer-screen-actions">
+          {point && (
+            <a
+              className="technical-source-link"
+              href={satelliteUrl(point.latitude, point.longitude)}
+              target="_blank"
+              rel="noreferrer"
             >
-              <Checkbox checked={false} disabled />
-              <i style={{ background: color }} />
-              <span>{label}</span>
-            </label>
-          ))}
-          <small>
-            Perímetros e garantias
-            <br />
-            aguardam integração.
-          </small>
+              <Layers3 size={15} />
+              Satélite
+            </a>
+          )}
+          {selected && writable && !editing && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(true);
+                setDraft(point);
+              }}
+            >
+              <MapPin size={15} />
+              {point ? 'Ajustar pin' : 'Marcar localização'}
+            </button>
+          )}
+          {!selected && writable && (
+            <button type="button" onClick={onStart}>
+              <Plus size={15} />
+              {hasProducers ? 'Cadastrar propriedade' : 'Cadastrar produtor'}
+            </button>
+          )}
         </div>
-        {(!located || !mapVisible) && (
-          <div className="technical-map-empty">
-            <MapPin size={29} />
-            <h3>
-              {located
-                ? selected?.name
-                : selected
-                  ? 'Localização não informada'
-                  : 'Localize a propriedade da operação'}
-            </h3>
-            <p>
-              {located
-                ? `Latitude ${number(lat, 6)} · Longitude ${number(lng, 6)}`
-                : selected
-                  ? 'Adicione latitude e longitude no cadastro da propriedade.'
-                  : 'Os imóveis vinculados à solicitação serão apresentados neste painel.'}
-            </p>
-            {located ? (
-              <Button variant="outline" onClick={() => setMapVisible(true)}>
-                Carregar mapa da propriedade
-              </Button>
-            ) : writable ? (
-              <Button
-                variant="outline"
-                onClick={() => (selected ? onEdit(selected) : onStart())}
-              >
-                <Plus size={15} />
-                {selected
-                  ? 'Informar coordenadas'
-                  : hasProducers
-                    ? 'Cadastrar propriedade'
-                    : 'Cadastrar produtor'}
-              </Button>
-            ) : null}
-            {located && <small>Mapa-base: OpenStreetMap.</small>}
-          </div>
-        )}
-        <div className="technical-map-source">
-          {mapVisible && located
-            ? 'PONTO CADASTRADO · OPENSTREETMAP'
-            : 'LOCALIZAÇÃO DO IMÓVEL'}
+      </header>
+      <PropertyMap
+        properties={properties}
+        selectedId={selected?.id}
+        municipality={selected?.municipality}
+        editable={editing && !saving}
+        onPick={setDraft}
+        onSelect={editing ? undefined : onSelect}
+        draft={draft}
+      />
+      {editing && (
+        <div className="producer-map-save producer-screen-actions">
+          <span>
+            {draft
+              ? `Pin escolhido: ${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`
+              : 'Clique no mapa para escolher o ponto.'}
+          </span>
+          <button
+            type="button"
+            className="r-btn"
+            disabled={!draft || saving}
+            onClick={save}
+          >
+            {saving ? 'Salvando…' : 'Salvar localização'}
+          </button>
+          <button
+            type="button"
+            className="r-btn r-btn-secondary"
+            disabled={saving}
+            onClick={() => {
+              setEditing(false);
+              setDraft(null);
+              setError('');
+            }}
+          >
+            Cancelar
+          </button>
         </div>
-      </div>
+      )}
+      {error && (
+        <p className="producer-map-message" role="alert">
+          {error}
+        </p>
+      )}
       {properties.length > 0 && (
         <div
-          className="technical-property-picker"
-          aria-label="Propriedades da operação"
+          className="technical-property-picker producer-screen-actions"
+          aria-label="Propriedades do produtor"
         >
           {properties.map((p) => (
             <button
               key={p.id}
+              disabled={editing}
               className={p.id === selected?.id ? 'active' : ''}
               onClick={() => onSelect(p.id)}
             >
@@ -656,12 +616,21 @@ function TechnicalMap({
               <span>
                 {p.name}
                 <small>
-                  {number(p.area_ha)} ha · {p.tenure}
+                  {number(p.area_ha)} ha declarados · {p.tenure}
                 </small>
               </span>
             </button>
           ))}
         </div>
+      )}
+      {selected && writable && (
+        <button
+          type="button"
+          className="text-action producer-screen-actions"
+          onClick={() => onEdit(selected)}
+        >
+          Editar cadastro completo e localização
+        </button>
       )}
     </article>
   );

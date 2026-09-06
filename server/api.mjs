@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { audit, hashPassword, verifyPassword } from './db.mjs';
 import { analyze, fields } from './analysis.mjs';
 import { detectMime, extractDocument } from './documents.mjs';
+import { findMunicipalities, municipalityBounds } from './maps.mjs';
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const clean = (v, max = 200) =>
@@ -203,6 +204,83 @@ export function createApi(db) {
       if (path !== '/api/password') writable(user);
     }
     if (path === '/api/me' && method === 'GET') return send(res, 200, user);
+    if (path === '/api/maps/municipalities' && method === 'GET')
+      return send(
+        res,
+        200,
+        await findMunicipalities(u.searchParams.get('name') || ''),
+      );
+    const municipalMatch = path.match(/^\/api\/maps\/municipalities\/(\d{7})$/);
+    if (municipalMatch && method === 'GET')
+      return send(res, 200, await municipalityBounds(municipalMatch[1]));
+    const overviewMatch = path.match(/^\/api\/producers\/([^/]+)\/overview$/);
+    if (overviewMatch && method === 'GET') {
+      const id = overviewMatch[1];
+      const result = await db.tx(async (c) => {
+        await c.query(
+          'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+        );
+        const producer = await one(c, 'SELECT * FROM producers WHERE id=$1', [
+          id,
+        ]);
+        const properties = (
+          await c.query(
+            'SELECT * FROM properties WHERE producer_id=$1 ORDER BY name,id',
+            [id],
+          )
+        ).rows;
+        const requests = (
+          await c.query(
+            'SELECT r.*,u.name AS consultant_name FROM requests r LEFT JOIN users u ON u.id=r.created_by WHERE r.producer_id=$1 ORDER BY r.updated_at DESC,r.id',
+            [id],
+          )
+        ).rows;
+        const documents = (
+          await c.query(
+            `SELECT d.id,d.request_id,d.name,d.mime,d.sha256,d.status,d.error,d.review_note,d.reviewed_fields,d.reviewed_at,d.created_at,u.name AS reviewer_name,r.title AS request_title
+          FROM documents d JOIN requests r ON r.id=d.request_id LEFT JOIN users u ON u.id=d.reviewed_by
+          WHERE r.producer_id=$1 ORDER BY d.created_at DESC,d.id`,
+            [id],
+          )
+        ).rows;
+        const analyses = (
+          await c.query(
+            `SELECT DISTINCT ON (a.request_id) a.id,a.request_id,a.source_revision,a.result,a.created_at,u.name AS actor_name
+          FROM analyses a JOIN requests r ON r.id=a.request_id LEFT JOIN users u ON u.id=a.created_by
+          WHERE r.producer_id=$1 ORDER BY a.request_id,a.created_at DESC,a.id`,
+            [id],
+          )
+        ).rows;
+        const decisions = (
+          await c.query(
+            `SELECT d.*,u.name AS actor_name,r.title AS request_title FROM decisions d JOIN requests r ON r.id=d.request_id LEFT JOIN users u ON u.id=d.created_by WHERE r.producer_id=$1 ORDER BY d.created_at DESC,d.id`,
+            [id],
+          )
+        ).rows;
+        const history = (
+          await c.query(
+            `SELECT a.*,u.name AS actor_name,COUNT(*) OVER() AS total_events FROM audit a LEFT JOIN users u ON u.id=a.actor WHERE
+          (a.entity_type='producer' AND a.entity_id=$1) OR
+          (a.entity_type='property' AND a.entity_id IN (SELECT id FROM properties WHERE producer_id=$1)) OR
+          (a.entity_type='request' AND a.entity_id IN (SELECT id FROM requests WHERE producer_id=$1)) OR
+          (a.entity_type='document' AND a.entity_id IN (SELECT d.id FROM documents d JOIN requests r ON r.id=d.request_id WHERE r.producer_id=$1))
+          ORDER BY a.id DESC LIMIT 200`,
+            [id],
+          )
+        ).rows;
+        return {
+          producer,
+          properties,
+          requests,
+          documents,
+          analyses,
+          decisions,
+          history,
+          generated_at: new Date().toISOString(),
+        };
+      });
+      return send(res, 200, result);
+    }
     if (path === '/api/state' && method === 'GET') {
       const result = await Promise.all([
         db.query('SELECT * FROM producers ORDER BY name LIMIT 2000'),
@@ -356,6 +434,67 @@ export function createApi(db) {
           id,
           { name: clean(b.name) },
         );
+      });
+      return send(res, 200, { id });
+    }
+    const locationMatch = path.match(/^\/api\/properties\/([^/]+)\/location$/);
+    if (locationMatch && method === 'PATCH') {
+      const b = await json(req),
+        id = locationMatch[1];
+      const lat = number(b.latitude, 'Latitude', {
+        min: -90,
+        max: 90,
+        nullable: false,
+      });
+      const lon = number(b.longitude, 'Longitude', {
+        min: -180,
+        max: 180,
+        nullable: false,
+      });
+      must(
+        Object.hasOwn(b, 'expected_latitude') &&
+          Object.hasOwn(b, 'expected_longitude'),
+        'Atualize a propriedade antes de salvar a localização.',
+      );
+      const expectedLat = number(b.expected_latitude, 'Latitude anterior', {
+        min: -90,
+        max: 90,
+      });
+      const expectedLon = number(b.expected_longitude, 'Longitude anterior', {
+        min: -180,
+        max: 180,
+      });
+      await db.tx(async (c) => {
+        const old = await one(
+          c,
+          'SELECT * FROM properties WHERE id=$1 FOR UPDATE',
+          [id],
+        );
+        const previous = {
+          latitude: old.latitude == null ? null : Number(old.latitude),
+          longitude: old.longitude == null ? null : Number(old.longitude),
+        };
+        if (
+          previous.latitude !== expectedLat ||
+          previous.longitude !== expectedLon
+        )
+          throw err(
+            409,
+            'A localização foi alterada por outro usuário. Atualize a página antes de salvar.',
+          );
+        await c.query(
+          'UPDATE properties SET latitude=$2,longitude=$3,updated_at=now() WHERE id=$1',
+          [id, lat, lon],
+        );
+        await c.query(
+          "UPDATE requests SET revision=revision+1,status='rascunho',updated_at=now() WHERE property_ids @> $1::jsonb",
+          [JSON.stringify([id])],
+        );
+        await audit(c, user, 'location_updated', 'property', id, {
+          name: old.name,
+          before: previous,
+          after: { latitude: lat, longitude: lon },
+        });
       });
       return send(res, 200, { id });
     }

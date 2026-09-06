@@ -46,6 +46,12 @@ import {
   TechnicalSummary,
   TechnicalOverview,
 } from './technical-workspace';
+import { PropertyMap, pointOf, type Point } from './property-map';
+import {
+  ProducerIdentity,
+  ProducerOverview,
+  type ProducerOverviewData,
+} from './producer-overview';
 
 type Row = Record<string, any>;
 type State = { producers: Row[]; properties: Row[]; requests: Row[] };
@@ -59,6 +65,7 @@ type Detail = {
 type Modal = {
   kind: 'producer' | 'property' | 'request' | 'user' | 'password';
   item?: Row;
+  defaults?: Row;
 } | null;
 const fields = financialFields as Record<string, string>;
 const money = (v: any) =>
@@ -316,7 +323,7 @@ export default function Operational() {
       properties: [],
       requests: [],
     }),
-    [detail, setDetail] = useState<Detail | null>(null);
+    [loadedDetail, setDetail] = useState<Detail | null>(null);
   const [active, setActive] = useState('Visão geral'),
     [selected, setSelected] = useState(''),
     [modal, setModal] = useState<Modal>(null),
@@ -326,6 +333,22 @@ export default function Operational() {
     [notice, setNotice] = useState(''),
     [search, setSearch] = useState(''),
     [propertyId, setPropertyId] = useState('');
+  const [producerId, setProducerId] = useState(''),
+    [overview, setOverview] = useState<ProducerOverviewData | null>(null),
+    [overviewError, setOverviewError] = useState('');
+  const producerSelection = useRef(producerId);
+  producerSelection.current = producerId;
+  const detail =
+    loadedDetail?.request.id === selected &&
+    loadedDetail.request.producer_id === producerId
+      ? loadedDetail
+      : null;
+  const producerData = overview?.producer.id === producerId ? overview : null;
+  const producerProperties =
+    producerData?.properties ||
+    state.properties.filter((p) => p.producer_id === producerId);
+  const currentProducer =
+    producerData?.producer || state.producers.find((p) => p.id === producerId);
   const [users, setUsers] = useState<Row[]>([]),
     [events, setEvents] = useState<Row[]>([]),
     [tab, setTab] = useState('Resumo'),
@@ -343,6 +366,11 @@ export default function Operational() {
         setDetail(d);
       }
     }
+    const pid = producerSelection.current;
+    if (pid) {
+      const producerOverview = await api('/producers/' + pid + '/overview');
+      if (producerSelection.current === pid) setOverview(producerOverview);
+    }
   }
   useEffect(() => {
     let live = true;
@@ -351,7 +379,10 @@ export default function Operational() {
         if (live) {
           setMe(u);
           setState(s);
-          if (s.requests.length) setSelected(s.requests[0].id);
+          if (s.requests.length) {
+            setSelected(s.requests[0].id);
+            setProducerId(s.requests[0].producer_id);
+          } else if (s.producers.length) setProducerId(s.producers[0].id);
         }
       })
       .catch((e) => live && setError(e.message))
@@ -360,6 +391,27 @@ export default function Operational() {
       live = false;
     };
   }, []);
+  useEffect(() => {
+    if (!producerId) {
+      setOverview(null);
+      return;
+    }
+    let live = true;
+    setOverviewError('');
+    api('/producers/' + producerId + '/overview')
+      .then((data) => {
+        if (live) setOverview(data);
+      })
+      .catch((e) => {
+        if (live) {
+          setOverview(null);
+          setOverviewError(e.message);
+        }
+      });
+    return () => {
+      live = false;
+    };
+  }, [producerId, state, detail]);
   useEffect(() => {
     if (!selected) {
       setDetail(null);
@@ -420,11 +472,38 @@ export default function Operational() {
     }
   }
   function openRequest(id: string, next = 'Solicitações') {
+    const target =
+      state.requests.find((r) => r.id === id) ||
+      producerData?.requests.find((r) => r.id === id);
+    if (target) setProducerId(target.producer_id);
     setSelected(id);
     setActive(next);
     setTab('Resumo');
     setDocId('');
     setAnalysisId('');
+  }
+  function openProducer(id: string) {
+    setProducerId(id);
+    setOverview(null);
+    setPropertyId('');
+    setDocId('');
+    setAnalysisId('');
+    setSelected(state.requests.find((r) => r.producer_id === id)?.id || '');
+    setDetail(null);
+    setActive('Visão geral');
+  }
+  async function saveLocation(property: Row, point: Point) {
+    await api('/properties/' + property.id + '/location', 'PATCH', {
+      ...point,
+      expected_latitude:
+        property.latitude == null ? null : Number(property.latitude),
+      expected_longitude:
+        property.longitude == null ? null : Number(property.longitude),
+    });
+    await refresh();
+    setNotice(
+      'Localização salva na propriedade. As análises vinculadas precisam refletir essa atualização.',
+    );
   }
   function go(label: string) {
     setActive(label);
@@ -448,7 +527,11 @@ export default function Operational() {
         );
         setModal(null);
         await refresh();
-        if (m.kind === 'request') openRequest(result.id);
+        if (m.kind === 'request') {
+          setProducerId(payload.producer_id);
+          openRequest(result.id);
+        }
+        if (m.kind === 'producer') openProducer(result.id);
         if (m.kind === 'user') setUsers(await api('/users'));
       },
       m.kind === 'password'
@@ -573,7 +656,10 @@ export default function Operational() {
       selected={selected}
       onSelect={(id) => openRequest(id, active)}
       onNew={() =>
-        setModal({ kind: state.producers.length ? 'request' : 'producer' })
+        setModal({
+          kind: state.producers.length ? 'request' : 'producer',
+          defaults: { producer_id: producerId },
+        })
       }
       hasProducers={!!state.producers.length}
       busy={busy || loading}
@@ -582,7 +668,7 @@ export default function Operational() {
       <main className="workspace r-content">
         <TechnicalSummary
           detail={detail}
-          properties={state.properties}
+          properties={producerProperties}
           onStage={openStage}
           onDossier={openDossier}
         />
@@ -637,25 +723,81 @@ export default function Operational() {
         ) : (
           <>
             {['Visão geral', 'Mapas'].includes(active) && (
-              <TechnicalOverview
-                detail={detail}
-                properties={selected && !detail ? [] : state.properties}
-                selectedPropertyId={propertyId}
-                onProperty={setPropertyId}
-                onEditProperty={(property) =>
-                  setModal({ kind: 'property', item: property })
-                }
-                onNavigate={go}
-                onStart={() =>
-                  setModal({
-                    kind: state.producers.length ? 'property' : 'producer',
-                  })
-                }
-                writable={write}
-                hasProducers={!!state.producers.length}
-                currentDoc={currentDoc}
-                onDoc={setDocId}
-              />
+              <div className="producer-workspace">
+                <ProducerIdentity
+                  producers={state.producers}
+                  selectedId={producerId}
+                  producer={currentProducer}
+                  onSelect={openProducer}
+                  onEdit={() =>
+                    currentProducer &&
+                    setModal({ kind: 'producer', item: currentProducer })
+                  }
+                  onCreate={() =>
+                    setModal({
+                      kind: 'property',
+                      defaults: {
+                        producer_id: producerId,
+                        municipality: currentProducer?.municipality,
+                      },
+                    })
+                  }
+                  ready={!!producerData}
+                  writable={write}
+                />
+                {overviewError && (
+                  <p className="r-alert r-error" role="alert">
+                    {overviewError}
+                  </p>
+                )}
+                <TechnicalOverview
+                  detail={detail}
+                  properties={producerProperties}
+                  selectedPropertyId={propertyId}
+                  onProperty={setPropertyId}
+                  onEditProperty={(property) =>
+                    setModal({ kind: 'property', item: property })
+                  }
+                  onSaveLocation={saveLocation}
+                  onNavigate={go}
+                  onStart={() =>
+                    setModal({
+                      kind: state.producers.length ? 'property' : 'producer',
+                      defaults: {
+                        producer_id: producerId,
+                        municipality: currentProducer?.municipality,
+                      },
+                    })
+                  }
+                  writable={write}
+                  hasProducers={!!state.producers.length}
+                  currentDoc={currentDoc}
+                  onDoc={setDocId}
+                />
+                {producerData ? (
+                  <ProducerOverview
+                    data={producerData}
+                    selectedRequestId={selected}
+                    onRequest={(id) => openRequest(id, 'Visão geral')}
+                    onEditProperty={(p) =>
+                      setModal({ kind: 'property', item: p })
+                    }
+                    onEditProducer={() =>
+                      setModal({ kind: 'producer', item: currentProducer })
+                    }
+                    onNewRequest={() =>
+                      setModal({
+                        kind: 'request',
+                        defaults: { producer_id: producerId },
+                      })
+                    }
+                    onNavigate={go}
+                    writable={write}
+                  />
+                ) : producerId && !overviewError ? (
+                  <p role="status">Reunindo as informações do produtor…</p>
+                ) : null}
+              </div>
             )}
             {active === 'Visão geral' && (
               <Panel
@@ -743,7 +885,13 @@ export default function Operational() {
                         ]).map((p) => (
                           <tr key={p.id}>
                             <td>
-                              <b>{p.name}</b>
+                              <button
+                                type="button"
+                                className="r-text-link"
+                                onClick={() => openProducer(p.id)}
+                              >
+                                {p.name}
+                              </button>
                               <small>
                                 {
                                   state.properties.filter(
@@ -1566,9 +1714,22 @@ function EditForm({
   onSave: (p: Row) => Promise<void>;
   onCancel: () => void;
 }) {
-  const item = modal.item || {},
+  const item = modal.item || modal.defaults || {},
     [producer, setProducer] = useState(item.producer_id || ''),
     [section, setSection] = useState('Operação');
+  const [municipalityInput, setMunicipalityInput] = useState(
+    item.municipality || '',
+  );
+  const [mapMunicipality, setMapMunicipality] = useState(
+    item.municipality || '',
+  );
+  const [latitude, setLatitude] = useState(
+    item.latitude == null ? '' : String(item.latitude),
+  );
+  const [longitude, setLongitude] = useState(
+    item.longitude == null ? '' : String(item.longitude),
+  );
+  const draftPoint = pointOf({ latitude, longitude });
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget,
@@ -1654,7 +1815,16 @@ function EditForm({
             name="producer_id"
             required
             value={producer}
-            onChange={(e) => setProducer(e.target.value)}
+            onChange={(e) => {
+              setProducer(e.target.value);
+              if (!municipalityInput && modal.kind === 'property') {
+                const municipality =
+                  state.producers.find((p) => p.id === e.target.value)
+                    ?.municipality || '';
+                setMunicipalityInput(municipality);
+                setMapMunicipality(municipality);
+              }
+            }}
             disabled={!!item.id}
           >
             <option value="">Selecione o produtor</option>
@@ -1678,13 +1848,22 @@ function EditForm({
             required
             maxLength={200}
           />
-          <Field
-            label="Município / UF"
-            name="municipality"
-            value={item.municipality}
-            required
-            maxLength={200}
-          />
+          <label className="r-field">
+            <span>Município / UF *</span>
+            <input
+              name="municipality"
+              value={municipalityInput}
+              onChange={(e) => setMunicipalityInput(e.target.value)}
+              onBlur={() => setMapMunicipality(municipalityInput)}
+              required
+              maxLength={200}
+              placeholder="Ex.: Roque Gonzales / RS"
+            />
+            <small>
+              O mapa abre na região informada. Marque o local exato da
+              propriedade abaixo.
+            </small>
+          </label>
           <Field
             label="Área total (ha)"
             name="area_ha"
@@ -1714,26 +1893,54 @@ function EditForm({
             value={item.registry}
             maxLength={200}
           />
-          <Field
-            label="Latitude (graus decimais)"
-            name="latitude"
-            value={item.latitude}
-            type="number"
-            min={-90}
-            max={90}
-            step="any"
-            placeholder="Ex.: -28.4"
-          />
-          <Field
-            label="Longitude (graus decimais)"
-            name="longitude"
-            value={item.longitude}
-            type="number"
-            min={-180}
-            max={180}
-            step="any"
-            placeholder="Ex.: -54.9"
-          />
+          <div className="r-wide producer-form-map">
+            <h3>Localização da propriedade</h3>
+            <PropertyMap
+              formMode
+              properties={[
+                {
+                  id: 'form-property',
+                  name: item.name || 'Propriedade',
+                  latitude: item.latitude,
+                  longitude: item.longitude,
+                },
+              ]}
+              selectedId="form-property"
+              municipality={mapMunicipality}
+              editable
+              draft={draftPoint}
+              onPick={(point) => {
+                setLatitude(point.latitude.toFixed(7));
+                setLongitude(point.longitude.toFixed(7));
+              }}
+            />
+          </div>
+          <label className="r-field">
+            <span>Latitude (graus decimais)</span>
+            <input
+              name="latitude"
+              value={latitude}
+              onChange={(e) => setLatitude(e.target.value)}
+              type="number"
+              min={-90}
+              max={90}
+              step="any"
+              placeholder="Preenchida pelo pin"
+            />
+          </label>
+          <label className="r-field">
+            <span>Longitude (graus decimais)</span>
+            <input
+              name="longitude"
+              value={longitude}
+              onChange={(e) => setLongitude(e.target.value)}
+              type="number"
+              min={-180}
+              max={180}
+              step="any"
+              placeholder="Preenchida pelo pin"
+            />
+          </label>
           <Field
             label="Observações e referências"
             name="notes"
