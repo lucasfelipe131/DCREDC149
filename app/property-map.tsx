@@ -10,6 +10,7 @@ import {
   Maximize,
   Minimize,
   Layers,
+  X,
 } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 
@@ -65,6 +66,16 @@ export function PropertyMap({
   showRegistry = true,
   children,
   toolbar,
+  workspaceTools,
+  workspacePanel,
+  workspaceActions,
+  workspaceStatus,
+  layerControls,
+  showLayers = false,
+  onLayersToggle,
+  focusRequest,
+  onVertexInsert,
+  onDrawFinish,
 }: {
   properties: Row[];
   selectedId?: string;
@@ -84,6 +95,16 @@ export function PropertyMap({
   showRegistry?: boolean;
   children?: ReactNode;
   toolbar?: ReactNode;
+  workspaceTools?: ReactNode;
+  workspacePanel?: ReactNode;
+  workspaceActions?: ReactNode;
+  workspaceStatus?: ReactNode;
+  layerControls?: ReactNode;
+  showLayers?: boolean;
+  onLayersToggle?: () => void;
+  focusRequest?: { nonce: number; areaId?: string };
+  onVertexInsert?: (index: number, point: Point) => void;
+  onDrawFinish?: () => void;
 }) {
   const element = useRef<HTMLDivElement>(null),
     map = useRef<Leaflet.Map | null>(null),
@@ -101,6 +122,8 @@ export function PropertyMap({
     onDrawPoint,
     onVertexMove,
     onAreaSelect,
+    onVertexInsert,
+    onDrawFinish,
   });
   callbacks.current = {
     editable,
@@ -109,6 +132,8 @@ export function PropertyMap({
     onDrawPoint,
     onVertexMove,
     onAreaSelect,
+    onVertexInsert,
+    onDrawFinish,
   };
   const [base, setBase] = useState('streets'),
     [expanded, setExpanded] = useState(false);
@@ -260,8 +285,16 @@ export function PropertyMap({
           minZoom: 3,
           maxZoom: 22,
           scrollWheelZoom: false,
+          zoomControl: false,
         });
         map.current = current;
+        L.control
+          .zoom({
+            position: 'topright',
+            zoomInTitle: 'Aproximar',
+            zoomOutTitle: 'Afastar',
+          })
+          .addTo(current);
         layer.current = L.layerGroup().addTo(current);
         geometryLayer.current = L.layerGroup().addTo(current);
         current.on('zoomend', () => setZoom(current.getZoom()));
@@ -455,6 +488,10 @@ export function PropertyMap({
             `V${String(i + 1).padStart(3, '0')} · ${point[0].toFixed(7)}, ${point[1].toFixed(7)}`,
           ),
         );
+        marker.on('click', (e: Leaflet.LeafletMouseEvent) => {
+          L.DomEvent.stopPropagation(e.originalEvent);
+          if (i === 0) callbacks.current.onDrawFinish?.();
+        });
         marker
           .on('dragend', () => {
             const p = marker.getLatLng().wrap();
@@ -465,6 +502,32 @@ export function PropertyMap({
           })
           .addTo(group);
       });
+      if (onVertexInsert && points.length >= 2)
+        points.forEach((p, i) => {
+          if (i === points.length - 1 && points.length < 3) return;
+          const next = points[(i + 1) % points.length];
+          const midpoint: [number, number] = [
+            (p[0] + next[0]) / 2,
+            (p[1] + next[1]) / 2,
+          ];
+          L.marker(midpoint, {
+            icon: L.divIcon({
+              className: 'map-midpoint',
+              html: '<span>+</span>',
+              iconSize: [20, 20],
+              iconAnchor: [10, 10],
+            }),
+            title: 'Inserir vértice nesta borda',
+          })
+            .on('click', (e: Leaflet.LeafletMouseEvent) => {
+              L.DomEvent.stopPropagation(e.originalEvent);
+              callbacks.current.onVertexInsert?.(i + 1, {
+                latitude: midpoint[0],
+                longitude: midpoint[1],
+              });
+            })
+            .addTo(group);
+        });
     }
   }, [
     ready,
@@ -475,6 +538,8 @@ export function PropertyMap({
     onVertexMove,
     showVertices,
     showRegistry,
+    onVertexInsert,
+    onDrawFinish,
   ]);
   useEffect(() => {
     const L = library.current,
@@ -524,6 +589,8 @@ export function PropertyMap({
     if (bounds && focusMunicipality.current) {
       map.current.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 });
       focusMunicipality.current = false;
+    } else if (polygons.length || drawing.length) {
+      return;
     } else if (latitude != null && longitude != null)
       map.current.setView([latitude, longitude], 15);
     else if (bounds)
@@ -531,6 +598,37 @@ export function PropertyMap({
     else map.current.setView([-14, -53], 4);
   }, [ready, selectedId, latitude, longitude, bounds]);
 
+  const lastFocus = useRef(-1);
+  useEffect(() => {
+    if (
+      !ready ||
+      !map.current ||
+      !focusRequest ||
+      focusRequest.nonce === lastFocus.current
+    )
+      return;
+    const area = focusRequest.areaId
+      ? polygons.find((p) => p.id === focusRequest.areaId)
+      : null;
+    const coords =
+      area?.coordinates ||
+      (focusRequest.areaId === activeAreaId && drawing.length
+        ? drawing
+        : polygons.flatMap((p) => p.coordinates));
+    if (!coords?.length) return;
+    lastFocus.current = focusRequest.nonce;
+    map.current.fitBounds(
+      coords.map(([lng, lat]: number[]) => [lat, lng] as [number, number]),
+      {
+        paddingTopLeft: map.current.getSize().x > 760 ? [120, 50] : [30, 110],
+        paddingBottomRight:
+          map.current.getSize().x > 760 && focusRequest.areaId
+            ? [350, 110]
+            : [50, 150],
+        maxZoom: 18,
+      },
+    );
+  }, [ready, focusRequest, polygons, drawing, activeAreaId]);
   function centerPin() {
     if (polygons.length && map.current) {
       map.current.fitBounds(
@@ -580,138 +678,181 @@ export function PropertyMap({
             Satélite
           </button>
         </div>
-        <button
-          type="button"
-          ref={fullscreenButton}
-          className="r-btn r-btn-secondary"
-          onClick={() => void toggleFullscreen()}
-        >
-          {expanded ? <Minimize size={16} /> : <Maximize size={16} />}{' '}
-          {expanded ? 'Sair da tela cheia' : 'Tela cheia'}
-        </button>
-      </div>
-      <div className="producer-map-search">
-        <label>
-          <span>Município / UF</span>
-          <input
-            aria-label="Município para abrir o mapa"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                if (!searching) searchCity();
-              }
-            }}
-            placeholder="Ex.: Roque Gonzales / RS"
-          />
-        </label>
-        <button
-          type="button"
-          className="r-btn r-btn-secondary"
-          disabled={searching || query.trim().length < 3}
-          onClick={searchCity}
-        >
-          <Search size={15} />
-          {searching ? 'Localizando…' : 'Abrir município'}
-        </button>
-        <button
-          type="button"
-          className="r-btn r-btn-secondary"
-          onClick={centerPin}
-          disabled={!draft && !selectedPoint && !bounds && !polygons.length}
-        >
-          <LocateFixed size={15} />
-          Centralizar
-        </button>
-      </div>
-      {choices.length > 1 && (
-        <label className="producer-map-choices">
-          Escolha o município
-          <select
-            value={municipalId}
-            onChange={(e) => {
-              focusMunicipality.current = true;
-              setMunicipalId(e.target.value);
-            }}
+        <div className="map-top-actions">
+          <button
+            type="button"
+            ref={fullscreenButton}
+            className="r-btn r-btn-secondary"
+            onClick={() => void toggleFullscreen()}
           >
-            <option value="">Selecione município e UF</option>
-            {choices.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} / {c.uf}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {lookupError && (
-        <p role="status" className="producer-map-message">
-          {lookupError}
-        </p>
-      )}
-      <details className="producer-official-layers producer-screen-actions">
+            {expanded ? <Minimize size={16} /> : <Maximize size={16} />}{' '}
+            {expanded ? 'Sair da tela cheia' : 'Tela cheia'}
+          </button>
+        </div>
+      </div>
+      <details className="map-municipality-search producer-screen-actions">
         <summary>
-          <Layers size={16} /> Camadas oficiais · CAR / SIGEF
+          <Search size={16} /> Buscar município ou centralizar
         </summary>
-        <div className="producer-map-layers">
+        <div className="producer-map-search">
           <label>
-            UF{' '}
+            <span>Município / UF</span>
+            <input
+              aria-label="Município para abrir o mapa"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (!searching) searchCity();
+                }
+              }}
+              placeholder="Ex.: Roque Gonzales / RS"
+            />
+          </label>
+          <button
+            type="button"
+            className="r-btn r-btn-secondary"
+            disabled={searching || query.trim().length < 3}
+            onClick={searchCity}
+          >
+            <Search size={15} />
+            {searching ? 'Localizando…' : 'Abrir município'}
+          </button>
+          <button
+            type="button"
+            className="r-btn r-btn-secondary"
+            onClick={centerPin}
+            disabled={!draft && !selectedPoint && !bounds && !polygons.length}
+          >
+            <LocateFixed size={15} />
+            Centralizar
+          </button>
+        </div>
+        {choices.length > 1 && (
+          <label className="producer-map-choices">
+            Escolha o município
             <select
-              aria-label="UF das camadas oficiais"
-              value={uf}
-              onChange={(e) => setUf(e.target.value)}
+              value={municipalId}
+              onChange={(e) => {
+                focusMunicipality.current = true;
+                setMunicipalId(e.target.value);
+              }}
             >
-              <option value="">Selecione</option>
-              {states.map((s) => (
-                <option key={s}>{s}</option>
+              <option value="">Selecione município e UF</option>
+              {choices.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} / {c.uf}
+                </option>
               ))}
             </select>
           </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={carLayer}
-              onChange={(e) => setCarLayer(e.target.checked)}
-            />{' '}
-            CAR · SICAR/SFB
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={sigefLayer}
-              onChange={(e) => setSigefLayer(e.target.checked)}
-            />{' '}
-            SIGEF · INCRA (particular)
-          </label>
-        </div>
-        <p>
-          Sobreposição de referência. Não vincula automaticamente CAR,
-          certificação ou matrícula ao produtor.
-        </p>
-        {(carLayer || sigefLayer) && (!uf || zoom < 12) && (
-          <p role="status">
-            {!uf
-              ? 'Escolha a UF.'
-              : 'Aproxime o mapa para carregar as camadas (zoom 12 ou maior).'}
-          </p>
         )}
-        {officialError.length > 0 && (
-          <p role="status">
-            {officialError.join(' / ')}: falha no serviço externo. A ausência de
-            contorno não comprova ausência de cadastro.{' '}
-            <button type="button" onClick={() => setLayerAttempt((n) => n + 1)}>
-              Tentar novamente
-            </button>
+        {lookupError && (
+          <p role="status" className="producer-map-message">
+            {lookupError}
           </p>
         )}
       </details>
       {toolbar}
-      <div className="producer-map-surface">
+      <div
+        className={
+          'producer-map-surface' +
+          (workspaceTools ? ' map-workbench-stage' : '')
+        }
+      >
         <div
           ref={element}
           className="producer-leaflet"
           aria-label="Mapa interativo da propriedade"
         />
+        {workspaceTools && (
+          <div className="map-workbench-overlay producer-screen-actions">
+            {workspaceTools}
+            {showLayers ? (
+              <aside
+                className="map-workspace-panel map-layers-panel"
+                aria-label="Camadas do mapa"
+              >
+                <header>
+                  <h3>Camadas do mapa</h3>
+                  <button
+                    type="button"
+                    onClick={onLayersToggle}
+                    aria-label="Fechar camadas"
+                  >
+                    <X size={18} />
+                  </button>
+                </header>
+                <div className="map-workspace-panel-body">
+                  <h4>Camadas oficiais</h4>
+                  <div className="producer-map-layers">
+                    <label>
+                      UF{' '}
+                      <select
+                        aria-label="UF das camadas oficiais"
+                        value={uf}
+                        onChange={(e) => setUf(e.target.value)}
+                      >
+                        <option value="">Selecione</option>
+                        {states.map((s) => (
+                          <option key={s}>{s}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={carLayer}
+                        onChange={(e) => setCarLayer(e.target.checked)}
+                      />{' '}
+                      CAR · SICAR/SFB
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={sigefLayer}
+                        onChange={(e) => setSigefLayer(e.target.checked)}
+                      />{' '}
+                      SIGEF · INCRA (particular)
+                    </label>
+                  </div>
+                  <p>
+                    Sobreposição de referência. Não vincula automaticamente CAR,
+                    certificação ou matrícula ao produtor.
+                  </p>
+                  {(carLayer || sigefLayer) && (!uf || zoom < 12) && (
+                    <p role="status">
+                      {!uf
+                        ? 'Escolha a UF.'
+                        : 'Aproxime o mapa para carregar as camadas (zoom 12 ou maior).'}
+                    </p>
+                  )}
+                  {officialError.length > 0 && (
+                    <p role="status">
+                      {officialError.join(' / ')}: falha no serviço externo. A
+                      ausência de contorno não comprova ausência de cadastro.{' '}
+                      <button
+                        type="button"
+                        onClick={() => setLayerAttempt((n) => n + 1)}
+                      >
+                        Tentar novamente
+                      </button>
+                    </p>
+                  )}
+                  <h4>Áreas cadastradas e legendas</h4>
+                  {layerControls}
+                </div>
+              </aside>
+            ) : (
+              workspacePanel
+            )}
+            <div className="map-canvas-status" aria-live="polite">
+              {workspaceStatus}
+            </div>
+            {workspaceActions}
+          </div>
+        )}
         {!ready && (
           <p className="producer-map-loading" role="status">
             {mapError || 'Abrindo mapa…'}

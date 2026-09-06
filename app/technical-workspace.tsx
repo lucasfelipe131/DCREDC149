@@ -542,6 +542,7 @@ function TechnicalMap({
         </div>
       </header>
       <AreaMapping
+        key={selected?.id || 'no-property'}
         property={selected}
         writable={writable}
         onSaved={onMapSaved}

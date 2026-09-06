@@ -1,7 +1,26 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Pencil, Plus, Save, Trash2, Undo2, X } from 'lucide-react';
+import {
+  Download,
+  Pencil,
+  Plus,
+  Save,
+  Trash2,
+  Undo2,
+  Redo2,
+  X,
+  History,
+  MousePointer2,
+  Layers,
+  LandPlot,
+  Focus,
+  PanelRightClose,
+  HelpCircle,
+  Check,
+} from 'lucide-react';
 import { PropertyMap, type Point } from './property-map';
+import { mapRequest as request, historyRows } from './map-request.mjs';
+import { MapVersions } from './map-versions';
 import { validateMapping } from '../server/geometry.mjs';
 
 type Row = Record<string, any>;
@@ -17,17 +36,6 @@ const ha = (n: any) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   }) + ' ha';
-async function request(path: string, method = 'GET', body?: any) {
-  const r = await fetch('/api' + path, {
-    method,
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'X-Credit-Request': '1' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data: any = await r.json();
-  if (!r.ok) throw Error(data.error || 'Não foi possível consultar o mapa.');
-  return data;
-}
 export function AreaMapping({
   property,
   properties,
@@ -77,6 +85,23 @@ export function AreaMapping({
     [viewVersion, setViewVersion] = useState(''),
     [versionDate, setVersionDate] = useState(''),
     [attempt, setAttempt] = useState(0);
+  const [panel, setPanel] = useState<
+    'none' | 'areas' | 'editor' | 'versions' | 'layers' | 'help'
+  >('none');
+  const [versionsLoading, setVersionsLoading] = useState(false),
+    [versionsError, setVersionsError] = useState('');
+  const [paused, setPaused] = useState(false),
+    [undoStack, setUndoStack] = useState<number[][][]>([]),
+    [redoStack, setRedoStack] = useState<number[][][]>([]);
+  const [focusRequest, setFocusRequest] = useState<{
+    nonce: number;
+    areaId?: string;
+  }>({ nonce: 0 });
+  const historyController = useRef<AbortController | null>(null);
+  const drawer = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (panel !== 'none' && panel !== 'layers') drawer.current?.focus();
+  }, [panel]);
   const latestRevision = useRef(0),
     fileSaved = useRef(onSaved);
   fileSaved.current = onSaved;
@@ -99,6 +124,7 @@ export function AreaMapping({
     (!editablePin || formMode);
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setReady(false);
     setFeatures([]);
     setRevision(0);
@@ -116,6 +142,9 @@ export function AreaMapping({
         propertyId +
         '/mapping' +
         (viewVersion ? '?revision=' + viewVersion : ''),
+      'GET',
+      undefined,
+      { signal: controller.signal },
     )
       .then((r) => {
         if (!live) return;
@@ -124,14 +153,27 @@ export function AreaMapping({
         setVersionDate(r.created_at || '');
         if (!viewVersion) latestRevision.current = r.revision;
         setReady(true);
+        setNotice((n) =>
+          n.startsWith('Abrindo versão')
+            ? 'Versão ' + r.revision + ' aberta no mapa.'
+            : n,
+        );
+        setFocusRequest((q) => ({ nonce: q.nonce + 1 }));
       })
       .catch((e) => {
         if (live) setError(e.message);
       });
     return () => {
       live = false;
+      controller.abort();
     };
   }, [propertyId, viewVersion, attempt]);
+  useEffect(() => {
+    setVersions([]);
+    setVersionsError('');
+    setVersionsLoading(false);
+    return () => historyController.current?.abort();
+  }, [propertyId]);
   useEffect(() => {
     callback.current?.({ features, revision, ready, drawing: !!draft, dirty });
   }, [features, revision, ready, draft, dirty]);
@@ -182,10 +224,69 @@ export function AreaMapping({
     });
     setError('');
     setNotice('');
+    setPaused(false);
+    setUndoStack([]);
+    setRedoStack([]);
+    setPanel('editor');
   }
   function change(key: string, value: any) {
+    if (key === 'coordinates') {
+      if (!draft) return;
+      setUndoStack((xs) => [...xs.slice(-99), draft.coordinates]);
+      setRedoStack([]);
+    }
     setDraft((d) => (d ? { ...d, [key]: value } : d));
   }
+  function undo() {
+    if (!draft || !undoStack.length) return;
+    setRedoStack((xs) => [...xs, draft.coordinates]);
+    setDraft({ ...draft, coordinates: undoStack.at(-1)! });
+    setUndoStack((xs) => xs.slice(0, -1));
+  }
+  function redo() {
+    if (!draft || !redoStack.length) return;
+    setUndoStack((xs) => [...xs, draft.coordinates]);
+    setDraft({ ...draft, coordinates: redoStack.at(-1)! });
+    setRedoStack((xs) => xs.slice(0, -1));
+  }
+  function cancelDrawing() {
+    if (
+      draft?.coordinates.length &&
+      !window.confirm('Cancelar este desenho? A versão salva será preservada.')
+    )
+      return;
+    setDraft(null);
+    setError('');
+    setPanel('none');
+    setPaused(false);
+  }
+  function focusArea(id?: string) {
+    if (id) {
+      setOnlyCar(false);
+      setOnlySigef(false);
+      setOnlyRegistry(false);
+      setFilter('');
+      setKindFilter('all');
+    }
+    setFocusRequest((q) => ({ nonce: q.nonce + 1, areaId: id }));
+  }
+  function selectArea(id: string) {
+    setActive(id);
+    setPanel('areas');
+  }
+  function viewMap(v: number) {
+    if (dirty || draft || busy) return;
+    setPanel('none');
+    setOnlyCar(false);
+    setOnlySigef(false);
+    setOnlyRegistry(false);
+    setFilter('');
+    setKindFilter('all');
+    setViewVersion(v === latestRevision.current ? '' : String(v));
+    setAttempt((n) => n + 1);
+    setNotice('Abrindo versão ' + v + ' no mapa…');
+  }
+
   function move(index: number, p: Point) {
     if (
       !Number.isFinite(p.latitude) ||
@@ -196,17 +297,15 @@ export function AreaMapping({
       setError('Coordenada fora do intervalo permitido.');
       return;
     }
-    setDraft((d) =>
-      d
-        ? {
-            ...d,
-            coordinates: d.coordinates.map((c: number[], i: number) =>
-              i === index ? [p.longitude, p.latitude] : c,
-            ),
-          }
-        : d,
-    );
+    if (draft)
+      change(
+        'coordinates',
+        draft.coordinates.map((c: number[], i: number) =>
+          i === index ? [p.longitude, p.latitude] : c,
+        ),
+      );
   }
+
   function complete() {
     if (!draft) return;
     try {
@@ -217,6 +316,8 @@ export function AreaMapping({
       setDraft(null);
       setDirty(true);
       setError('');
+      setPanel('areas');
+      setPaused(false);
       setNotice(
         formMode
           ? 'Área preparada. Salve o cadastro para confirmar.'
@@ -224,6 +325,7 @@ export function AreaMapping({
       );
     } catch (e) {
       setError((e as Error).message);
+      setPanel('editor');
     }
   }
   function edit(f: Row) {
@@ -234,6 +336,11 @@ export function AreaMapping({
     });
     setError('');
     setNotice('');
+    setPaused(false);
+    setUndoStack([]);
+    setRedoStack([]);
+    setPanel('editor');
+    focusArea(f.id);
   }
   function remove(f: Row) {
     if (f.kind === 'total' && features.some((a) => a.parent_id === f.id)) {
@@ -269,7 +376,8 @@ export function AreaMapping({
       setViewVersion('');
       setDirty(false);
       setNotice('Mapeamento salvo — versão ' + r.revision + '.');
-      setVersionDate(new Date().toISOString());
+      setVersionDate(r.created_at || new Date().toISOString());
+      setVersions([]);
       await fileSaved.current?.();
     } catch (e) {
       setError((e as Error).message);
@@ -278,306 +386,41 @@ export function AreaMapping({
     }
   }
   async function history() {
+    setPanel('versions');
+    setVersionsError('');
+    historyController.current?.abort();
+    if (!propertyId) {
+      setVersions([]);
+      setVersionsLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    historyController.current = controller;
+    setVersionsLoading(true);
     try {
-      setVersions(
-        await request('/properties/' + propertyId + '/mapping/versions'),
+      const rows = historyRows(
+        await request(
+          '/properties/' + propertyId + '/mapping/versions',
+          'GET',
+          undefined,
+          { signal: controller.signal },
+        ),
       );
+      if (!controller.signal.aborted) {
+        setVersions(rows);
+        if (rows.length)
+          latestRevision.current = Math.max(
+            ...rows.map((v: Row) => v.revision),
+          );
+      }
     } catch (e) {
-      setError((e as Error).message);
+      if (!controller.signal.aborted) setVersionsError((e as Error).message);
+    } finally {
+      if (!controller.signal.aborted) setVersionsLoading(false);
     }
   }
-  return (
-    <PropertyMap
-      properties={properties}
-      selectedId={selectedId}
-      municipality={municipality}
-      editable={editablePin && !draft && ready && !busy}
-      onPick={onPick}
-      onSelect={dirty || draft || busy ? undefined : onSelect}
-      draft={pin}
-      formMode={formMode}
-      polygons={filtered.filter((f) => f.id !== draft?.id)}
-      drawing={draft?.coordinates || []}
-      activeAreaId={active}
-      showVertices={vertices}
-      showRegistry={registryLabels}
-      onDrawPoint={
-        draft && editingAllowed
-          ? (p) => {
-              if (draft.coordinates.length >= 500) {
-                setError('Limite de 500 vértices por área.');
-                return;
-              }
-              setDraft((d) =>
-                d
-                  ? {
-                      ...d,
-                      coordinates: [
-                        ...d.coordinates,
-                        [p.longitude, p.latitude],
-                      ],
-                    }
-                  : d,
-              );
-            }
-          : undefined
-      }
-      onVertexMove={draft && editingAllowed ? move : undefined}
-      onAreaSelect={draft ? undefined : setActive}
-      toolbar={
-        <>
-          <div className="area-toolbar producer-screen-actions">
-            {editingAllowed && !draft && (
-              <>
-                <button
-                  type="button"
-                  className="r-btn r-btn-secondary"
-                  onClick={() => start('total')}
-                >
-                  <Plus size={16} /> Área total
-                </button>
-                <button
-                  type="button"
-                  className="r-btn r-btn-secondary"
-                  disabled={!totals.length}
-                  onClick={() => start('productive')}
-                >
-                  <Plus size={16} /> Área produtiva / cultura
-                </button>
-              </>
-            )}
-            {!formMode && editingAllowed && (
-              <button
-                type="button"
-                className="r-btn"
-                disabled={!dirty || !!draft}
-                onClick={() => void save()}
-              >
-                <Save size={16} />
-                {busy ? 'Salvando…' : 'Salvar mapeamento'}
-              </button>
-            )}
-            {!formMode &&
-              propertyId &&
-              revision > 0 &&
-              !dirty &&
-              !draft &&
-              features.length > 0 && (
-                <a
-                  className="r-btn r-btn-secondary"
-                  href={
-                    '/api/properties/' +
-                    propertyId +
-                    '/mapping/kml?revision=' +
-                    revision
-                  }
-                >
-                  <Download size={16} /> Baixar KML · v{revision}
-                </a>
-              )}
-            {!formMode && dirty && !draft && (
-              <button
-                type="button"
-                className="r-btn r-btn-secondary"
-                disabled={busy}
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      'Descartar as alterações não salvas e abrir a versão atual?',
-                    )
-                  ) {
-                    setViewVersion('');
-                    setAttempt((n) => n + 1);
-                    setNotice('');
-                  }
-                }}
-              >
-                Descartar alterações
-              </button>
-            )}
-            {!formMode && propertyId && (
-              <button
-                type="button"
-                className="r-btn r-btn-secondary"
-                disabled={dirty || !!draft}
-                onClick={() => void history()}
-              >
-                Versões do mapa
-              </button>
-            )}
-            {versions.length > 0 && (
-              <select
-                aria-label="Versão do mapa"
-                value={viewVersion}
-                disabled={dirty || !!draft || busy}
-                onChange={(e) => setViewVersion(e.target.value)}
-              >
-                <option value="">Versão atual</option>
-                {versions.map((v) => (
-                  <option key={v.revision} value={v.revision}>
-                    v{v.revision} ·{' '}
-                    {new Date(v.created_at).toLocaleString('pt-BR')} ·{' '}
-                    {v.actor_name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          <div className="area-filters producer-screen-actions">
-            <input
-              aria-label="Filtrar áreas por matrícula CAR SIGEF ou cultura"
-              placeholder="Buscar área, matrícula, CAR, SIGEF ou cultura"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-            <select
-              aria-label="Tipo de área exibida"
-              value={kindFilter}
-              onChange={(e) => setKindFilter(e.target.value)}
-            >
-              <option value="all">Todas as áreas</option>
-              <option value="total">Área total</option>
-              <option value="productive">Área produtiva</option>
-            </select>
-            <label>
-              <input
-                type="checkbox"
-                checked={onlyCar}
-                onChange={(e) => setOnlyCar(e.target.checked)}
-              />{' '}
-              Com CAR
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={onlySigef}
-                onChange={(e) => setOnlySigef(e.target.checked)}
-              />{' '}
-              Com SIGEF
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={onlyRegistry}
-                onChange={(e) => setOnlyRegistry(e.target.checked)}
-              />{' '}
-              Com matrícula
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={vertices}
-                onChange={(e) => setVertices(e.target.checked)}
-              />{' '}
-              Vértices
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={registryLabels}
-                onChange={(e) => setRegistryLabels(e.target.checked)}
-              />{' '}
-              Legenda de matrícula
-            </label>
-          </div>
-          {!ready && !error && (
-            <p role="status" className="producer-map-message">
-              Carregando mapeamento salvo…
-            </p>
-          )}
-          {historical && (
-            <p className="producer-map-message">
-              Consulta da versão histórica {revision}. A edição está disponível
-              na versão atual.
-            </p>
-          )}
-          {draft && (
-            <div className="area-drawing-bar producer-screen-actions">
-              <strong>
-                {draft.kind === 'total'
-                  ? 'Desenhando área total'
-                  : 'Desenhando área produtiva'}{' '}
-                · {draft.coordinates.length} vértices
-              </strong>
-              <button
-                type="button"
-                onClick={() =>
-                  change('coordinates', draft.coordinates.slice(0, -1))
-                }
-                disabled={!draft.coordinates.length}
-              >
-                <Undo2 size={15} /> Desfazer ponto
-              </button>
-              <button type="button" onClick={complete}>
-                <Save size={15} /> Concluir área
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDraft(null);
-                  setError('');
-                }}
-              >
-                <X size={15} /> Cancelar desenho
-              </button>
-            </div>
-          )}
-        </>
-      }
-    >
-      {error && (
-        <p role="alert" className="producer-map-message r-error">
-          {error}
-          {!ready && (
-            <button type="button" onClick={() => setAttempt((n) => n + 1)}>
-              Tentar novamente
-            </button>
-          )}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="producer-map-message">
-          {notice}
-        </p>
-      )}
-      {summary && (
-        <div className="area-metrics">
-          <div>
-            <span>Área total mapeada</span>
-            <strong>{ha(summary.total_ha)}</strong>
-          </div>
-          <div>
-            <span>Área produtiva mapeada</span>
-            <strong>{ha(summary.productive_ha)}</strong>
-          </div>
-          <div>
-            <span>Sem classificação produtiva</span>
-            <strong>{ha(summary.unclassified_ha)}</strong>
-          </div>
-        </div>
-      )}
-      {!formMode && property?.area_ha && summary && summary.total_count > 0 && (
-        <p className="area-method">
-          Área declarada: {ha(property.area_ha)} · Diferença entre mapeada e
-          declarada: {ha(summary.total_ha - Number(property.area_ha))}. Confira
-          a origem dos limites e das medidas.
-        </p>
-      )}
-      <p className="area-method">
-        Azul: área total · Verde: área produtiva · Amarelo: desenho em edição.
-        Medidas geodésicas aproximadas, WGS84.{' '}
-        {dirty
-          ? 'Alterações ainda não salvas.'
-          : revision
-            ? 'Versão ' +
-              revision +
-              (versionDate
-                ? ' · ' + new Date(versionDate).toLocaleString('pt-BR')
-                : '')
-            : 'Nenhum polígono salvo.'}{' '}
-        O KML inclui todas as áreas da versão salva, independentemente dos
-        filtros.
-      </p>
+  const editorFields = (
+    <>
       {draft && (
         <div className="area-editor producer-screen-actions">
           <h3>
@@ -682,62 +525,10 @@ export function AreaMapping({
           </p>
         </div>
       )}
-      {filtered.length > 0 && (
-        <div className="area-list">
-          {filtered.map((f) => (
-            <article className={active === f.id ? 'active' : ''} key={f.id}>
-              <button
-                type="button"
-                className="area-select"
-                onClick={() => setActive(f.id)}
-              >
-                <span className={'area-swatch ' + f.kind} />
-                <strong>{f.name}</strong>
-                <span>{ha(f.area_ha)}</span>
-              </button>
-              <p>
-                {f.kind === 'total'
-                  ? 'Área total'
-                  : 'Área produtiva · ' +
-                    (f.crop || 'Cultura pendente') +
-                    (f.season ? ' · ' + f.season : ' · Safra pendente')}
-              </p>
-              {registryLabels && (
-                <p>
-                  Matrícula: {f.registry || 'pendente'} · Cartório:{' '}
-                  {f.registry_office || 'pendente'} · Titular:{' '}
-                  {f.registry_holder || 'pendente'}
-                  <br />
-                  CAR: {f.car || 'não informado'} · SIGEF:{' '}
-                  {f.sigef || 'não informado'}
-                </p>
-              )}
-              {editingAllowed && !draft && (
-                <div className="producer-screen-actions">
-                  <button type="button" onClick={() => edit(f)}>
-                    <Pencil size={14} /> Editar contorno e dados
-                  </button>
-                  <button type="button" onClick={() => remove(f)}>
-                    <Trash2 size={14} /> Remover área
-                  </button>
-                </div>
-              )}
-            </article>
-          ))}
-        </div>
-      )}
-      {!features.length && ready && !draft && (
-        <p className="producer-map-message">
-          Use “Área total” para desenhar o perímetro; depois cadastre os talhões
-          em “Área produtiva / cultura”. O pin localiza a propriedade, mas não
-          define sua superfície.
-        </p>
-      )}
-      {features.length > 0 && !filtered.length && (
-        <p className="producer-map-message">
-          Nenhuma área corresponde aos filtros.
-        </p>
-      )}
+    </>
+  );
+  const coordinateTable = (
+    <>
       {focused && (
         <details className="area-coordinates" open={!!draft}>
           <summary>
@@ -830,6 +621,561 @@ export function AreaMapping({
             </table>
           </div>
         </details>
+      )}
+    </>
+  );
+  const localLayerFilters = (
+    <>
+      <div className="area-filters producer-screen-actions">
+        <input
+          aria-label="Filtrar áreas por matrícula CAR SIGEF ou cultura"
+          placeholder="Buscar área, matrícula, CAR, SIGEF ou cultura"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <select
+          aria-label="Tipo de área exibida"
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value)}
+        >
+          <option value="all">Todas as áreas</option>
+          <option value="total">Área total</option>
+          <option value="productive">Área produtiva</option>
+        </select>
+        <label>
+          <input
+            type="checkbox"
+            checked={onlyCar}
+            onChange={(e) => setOnlyCar(e.target.checked)}
+          />{' '}
+          Com CAR
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={onlySigef}
+            onChange={(e) => setOnlySigef(e.target.checked)}
+          />{' '}
+          Com SIGEF
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={onlyRegistry}
+            onChange={(e) => setOnlyRegistry(e.target.checked)}
+          />{' '}
+          Com matrícula
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={vertices}
+            onChange={(e) => setVertices(e.target.checked)}
+          />{' '}
+          Vértices
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={registryLabels}
+            onChange={(e) => setRegistryLabels(e.target.checked)}
+          />{' '}
+          Legenda de matrícula
+        </label>
+      </div>
+    </>
+  );
+  return (
+    <PropertyMap
+      properties={properties}
+      selectedId={selectedId}
+      municipality={municipality}
+      editable={editablePin && !draft && ready && !busy}
+      onPick={onPick}
+      onSelect={dirty || draft || busy ? undefined : onSelect}
+      draft={pin}
+      formMode={formMode}
+      polygons={filtered.filter((f) => f.id !== draft?.id)}
+      drawing={draft?.coordinates || []}
+      activeAreaId={active}
+      showVertices={vertices}
+      showRegistry={registryLabels}
+      onDrawPoint={
+        draft && editingAllowed && !paused
+          ? (p) => {
+              if (draft.coordinates.length >= 500) {
+                setError('Limite de 500 vértices por área.');
+                return;
+              }
+              change('coordinates', [
+                ...draft.coordinates,
+                [p.longitude, p.latitude],
+              ]);
+            }
+          : undefined
+      }
+      onVertexMove={draft && editingAllowed ? move : undefined}
+      onAreaSelect={draft ? undefined : selectArea}
+      focusRequest={focusRequest}
+      onVertexInsert={
+        draft && editingAllowed
+          ? (index, point) => {
+              if (draft.coordinates.length >= 500) {
+                setError('Limite de 500 vértices por área.');
+                return;
+              }
+              change('coordinates', [
+                ...draft.coordinates.slice(0, index),
+                [point.longitude, point.latitude],
+                ...draft.coordinates.slice(index),
+              ]);
+            }
+          : undefined
+      }
+      onDrawFinish={
+        draft && editingAllowed && !paused && draft.coordinates.length >= 3
+          ? complete
+          : undefined
+      }
+      showLayers={panel === 'layers'}
+      onLayersToggle={() =>
+        setPanel((p) => (p === 'layers' ? 'none' : 'layers'))
+      }
+      layerControls={localLayerFilters}
+      workspaceTools={
+        <div
+          className="map-tool-dock"
+          role="toolbar"
+          aria-label="Ferramentas do mapa"
+        >
+          <button
+            type="button"
+            aria-pressed={!draft || paused}
+            onClick={() => {
+              setPaused(true);
+              setPanel('none');
+            }}
+            title="Mover o mapa sem adicionar pontos"
+          >
+            <MousePointer2 size={18} />
+            <span>Navegar</span>
+          </button>
+          {writable && (
+            <>
+              <button
+                type="button"
+                disabled={!editingAllowed || !!draft}
+                onClick={() => start('total')}
+                title="Desenhar o perímetro do imóvel"
+              >
+                <Plus size={18} />
+                <span>Área total</span>
+              </button>
+              <button
+                type="button"
+                disabled={!editingAllowed || !!draft || !totals.length}
+                onClick={() => start('productive')}
+                title={
+                  totals.length
+                    ? 'Desenhar um talhão dentro da área total'
+                    : 'Desenhe e conclua a área total primeiro'
+                }
+              >
+                <LandPlot size={18} />
+                <span>Talhão / cultura</span>
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            aria-pressed={panel === 'areas' || panel === 'editor'}
+            onClick={() =>
+              setPanel((p) =>
+                p === 'areas' || p === 'editor'
+                  ? 'none'
+                  : draft
+                    ? 'editor'
+                    : 'areas',
+              )
+            }
+          >
+            <Pencil size={18} />
+            <span>Áreas e dados</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={panel === 'layers'}
+            onClick={() =>
+              setPanel((p) => (p === 'layers' ? 'none' : 'layers'))
+            }
+          >
+            <Layers size={18} />
+            <span>Camadas</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={panel === 'versions'}
+            onClick={() => void history()}
+          >
+            <History size={18} />
+            <span>Versões</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setPanel('none');
+              focusArea();
+            }}
+          >
+            <Focus size={18} />
+            <span>Enquadrar tudo</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={panel === 'help'}
+            onClick={() => setPanel((p) => (p === 'help' ? 'none' : 'help'))}
+          >
+            <HelpCircle size={18} />
+            <span>Como usar</span>
+          </button>
+        </div>
+      }
+      workspacePanel={
+        panel !== 'none' && panel !== 'layers' ? (
+          <aside
+            className="map-workspace-panel"
+            ref={drawer}
+            tabIndex={-1}
+            aria-label={
+              panel === 'versions'
+                ? 'Versões do mapa'
+                : panel === 'help'
+                  ? 'Ajuda do mapa'
+                  : 'Áreas e dados'
+            }
+          >
+            <header>
+              <h3>
+                {panel === 'versions'
+                  ? 'Versões do mapa'
+                  : panel === 'help'
+                    ? 'Como mapear'
+                    : draft
+                      ? 'Dados do desenho'
+                      : 'Áreas e dados'}
+              </h3>
+              <button
+                type="button"
+                aria-label="Fechar painel do mapa"
+                onClick={() => setPanel('none')}
+              >
+                <PanelRightClose size={18} />
+              </button>
+            </header>
+            <div className="map-workspace-panel-body">
+              {panel === 'versions' ? (
+                <MapVersions
+                  versions={versions}
+                  loading={versionsLoading}
+                  error={versionsError}
+                  propertyId={propertyId}
+                  currentRevision={latestRevision.current}
+                  shownRevision={revision}
+                  locked={dirty || !!draft || busy || !ready || formMode}
+                  lockMessage={
+                    formMode
+                      ? 'No cadastro, o histórico pode ser consultado e o KML baixado. Para abrir um mapa antigo, salve ou feche o cadastro e use Versões na ficha da propriedade.'
+                      : dirty || draft
+                        ? 'Há um desenho ou alterações não salvas. Conclua e salve, ou descarte as alterações antes de abrir outra versão.'
+                        : ''
+                  }
+                  onRetry={() => void history()}
+                  onView={viewMap}
+                  onReturn={() => setPanel(draft ? 'editor' : 'none')}
+                />
+              ) : panel === 'help' ? (
+                <ol className="map-help">
+                  <li>
+                    <strong>Localize o imóvel</strong>Busque o município e
+                    escolha Mapa ou Satélite.
+                  </li>
+                  <li>
+                    <strong>Desenhe a área total</strong>Clique nos vértices.
+                    Clique no primeiro ponto ou em Concluir área para fechar.
+                  </li>
+                  <li>
+                    <strong>Cadastre os talhões</strong>Escolha a área total,
+                    informe cultura e safra e desenhe os limites produtivos.
+                  </li>
+                  <li>
+                    <strong>Ajuste com facilidade</strong>Arraste os pontos. Use
+                    os sinais + nas bordas para inserir vértices, ou Desfazer /
+                    Refazer.
+                  </li>
+                  <li>
+                    <strong>Salve e exporte</strong>
+                    {formMode
+                      ? 'Salve o cadastro para gravar as áreas.'
+                      : 'Salvar mapeamento cria a versão. Depois, baixe o KML ou consulte o histórico em Versões.'}
+                  </li>
+                </ol>
+              ) : draft ? (
+                <>
+                  {editorFields}
+                  {coordinateTable}
+                </>
+              ) : (
+                <>
+                  <p>
+                    Clique no contorno ou selecione a área para consultar seus
+                    dados.
+                  </p>
+                  {features.length === 0 && (
+                    <p className="map-panel-note">
+                      Nenhuma área desenhada. Comece por “Área total”.
+                    </p>
+                  )}
+                  {features.map((f) => (
+                    <article
+                      className={
+                        'map-area-card ' + (active === f.id ? 'selected' : '')
+                      }
+                      key={f.id}
+                    >
+                      <button
+                        type="button"
+                        className="area-select"
+                        onClick={() => {
+                          setActive(f.id);
+                          focusArea(f.id);
+                        }}
+                      >
+                        <span className={'area-swatch ' + f.kind} />
+                        <strong>{f.name}</strong>
+                        <span>{ha(f.area_ha)}</span>
+                      </button>
+                      <p>
+                        {f.kind === 'total'
+                          ? 'Área total'
+                          : (f.crop || 'Cultura pendente') +
+                            ' · ' +
+                            (f.season || 'Safra pendente')}
+                        <br />
+                        Matrícula: {f.registry || 'pendente'}
+                      </p>
+                      {active === f.id && (
+                        <>
+                          <p>
+                            Cartório: {f.registry_office || 'pendente'}
+                            <br />
+                            Titular: {f.registry_holder || 'pendente'}
+                            <br />
+                            CAR: {f.car || 'não informado'}
+                            <br />
+                            SIGEF: {f.sigef || 'não informado'}
+                          </p>
+                          <div className="map-version-actions">
+                            <button
+                              type="button"
+                              onClick={() => focusArea(f.id)}
+                            >
+                              <Focus size={15} /> Localizar
+                            </button>
+                            {editingAllowed && (
+                              <>
+                                <button type="button" onClick={() => edit(f)}>
+                                  <Pencil size={15} /> Editar
+                                </button>
+                                <button type="button" onClick={() => remove(f)}>
+                                  <Trash2 size={15} /> Remover
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </article>
+                  ))}
+                  {coordinateTable}
+                </>
+              )}
+            </div>
+          </aside>
+        ) : null
+      }
+      workspaceStatus={
+        <>
+          {!ready && !error && <p role="status">Carregando mapeamento…</p>}
+          {error && (
+            <p role="alert" className="map-panel-error">
+              {error}
+              {!ready && (
+                <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+                  Tentar novamente
+                </button>
+              )}
+            </p>
+          )}
+          {notice && !error && <p role="status">{notice}</p>}
+          {historical && (
+            <p>
+              Consultando versão histórica {revision}.{' '}
+              <button
+                type="button"
+                disabled={busy || !!draft || dirty}
+                onClick={() => viewMap(latestRevision.current)}
+              >
+                Voltar à versão atual
+              </button>
+            </p>
+          )}
+          {draft && (
+            <strong>
+              {paused
+                ? 'Desenho pausado — navegue pelo mapa.'
+                : 'Clique para adicionar pontos; arraste para ajustar.'}{' '}
+              · {draft.coordinates.length} vértices
+            </strong>
+          )}
+        </>
+      }
+      workspaceActions={
+        <div className="map-action-bar" aria-label="Ações do mapeamento">
+          {draft ? (
+            <>
+              <button type="button" onClick={undo} disabled={!undoStack.length}>
+                <Undo2 size={16} /> Desfazer
+              </button>
+              <button type="button" onClick={redo} disabled={!redoStack.length}>
+                <Redo2 size={16} /> Refazer
+              </button>
+              <button type="button" onClick={() => setPaused((p) => !p)}>
+                {paused ? 'Continuar desenho' : 'Pausar desenho'}
+              </button>
+              <button type="button" onClick={() => setPanel('editor')}>
+                <Pencil size={16} /> Dados
+              </button>
+              <button
+                type="button"
+                className="map-primary"
+                disabled={draft.coordinates.length < 3}
+                onClick={complete}
+              >
+                <Check size={16} /> Concluir área
+              </button>
+              <button type="button" onClick={cancelDrawing}>
+                <X size={16} /> Cancelar
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="map-save-state">
+                {dirty
+                  ? 'Alterações não salvas'
+                  : revision
+                    ? 'Versão ' + revision + ' salva'
+                    : 'Nenhuma versão salva'}
+              </span>
+              {!formMode && writable && (
+                <button
+                  type="button"
+                  className="map-primary"
+                  disabled={
+                    !dirty || busy || !ready || historical || editablePin
+                  }
+                  onClick={() => void save()}
+                >
+                  <Save size={16} />
+                  {busy ? 'Salvando…' : 'Salvar mapeamento'}
+                </button>
+              )}
+              {formMode && dirty && (
+                <strong>Salve o cadastro para confirmar as áreas.</strong>
+              )}
+              {!formMode &&
+                propertyId &&
+                revision > 0 &&
+                !dirty &&
+                features.length > 0 && (
+                  <a
+                    href={
+                      '/api/properties/' +
+                      propertyId +
+                      '/mapping/kml?revision=' +
+                      revision
+                    }
+                  >
+                    <Download size={16} /> Baixar KML
+                  </a>
+                )}
+              {dirty && !busy && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Descartar alterações não salvas?')) {
+                      setViewVersion('');
+                      setAttempt((n) => n + 1);
+                      setNotice('');
+                    }
+                  }}
+                >
+                  Descartar alterações
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      }
+    >
+      {summary && (
+        <div className="area-metrics">
+          <div>
+            <span>Área total mapeada</span>
+            <strong>{ha(summary.total_ha)}</strong>
+          </div>
+          <div>
+            <span>Área produtiva mapeada</span>
+            <strong>{ha(summary.productive_ha)}</strong>
+          </div>
+          <div>
+            <span>Sem classificação produtiva</span>
+            <strong>{ha(summary.unclassified_ha)}</strong>
+          </div>
+        </div>
+      )}
+      {!formMode && property?.area_ha && summary && summary.total_count > 0 && (
+        <p className="area-method">
+          Área declarada: {ha(property.area_ha)} · Diferença entre mapeada e
+          declarada: {ha(summary.total_ha - Number(property.area_ha))}. Confira
+          a origem dos limites e das medidas.
+        </p>
+      )}
+      <p className="area-method">
+        Azul: área total · Verde: área produtiva · Amarelo: desenho em edição.
+        Medidas geodésicas aproximadas, WGS84.{' '}
+        {dirty
+          ? 'Alterações ainda não salvas.'
+          : revision
+            ? 'Versão ' +
+              revision +
+              (versionDate
+                ? ' · ' + new Date(versionDate).toLocaleString('pt-BR')
+                : '')
+            : 'Nenhum polígono salvo.'}{' '}
+        O KML inclui todas as áreas da versão salva, independentemente dos
+        filtros.
+      </p>
+      {!features.length && ready && !draft && (
+        <p className="producer-map-message">
+          Use “Área total” para desenhar o perímetro; depois cadastre os talhões
+          em “Talhão / cultura”. O pin localiza a propriedade, mas não define
+          sua superfície.
+        </p>
+      )}
+      {features.length > 0 && !filtered.length && (
+        <p className="producer-map-message">
+          Nenhuma área corresponde aos filtros.
+        </p>
       )}
     </PropertyMap>
   );

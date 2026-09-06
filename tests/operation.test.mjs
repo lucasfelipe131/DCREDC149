@@ -574,6 +574,11 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
       'Snapshot antigo preserva localização anterior',
     );
     const mappingPath = '/properties/' + property.body.id + '/mapping';
+    assert.deepEqual(
+      (await call(mappingPath + '/versions')).body,
+      [],
+      'Propriedade sem polígonos retorna histórico vazio, mesmo com pin salvo',
+    );
     const totalArea = {
       id: 'total-test',
       name: 'Perímetro de teste',
