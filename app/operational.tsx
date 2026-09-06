@@ -19,6 +19,7 @@ import {
   FolderKanban,
   History,
   LandPlot,
+  Map,
   LoaderCircle,
   Menu,
   Plus,
@@ -40,6 +41,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { fields as financialFields } from '../server/analysis.mjs';
+import {
+  TechnicalShell,
+  TechnicalSummary,
+  TechnicalOverview,
+} from './technical-workspace';
 
 type Row = Record<string, any>;
 type State = { producers: Row[]; properties: Row[]; requests: Row[] };
@@ -88,10 +94,11 @@ const statusNames: Record<string, string> = {
 };
 const nav = [
   ['Visão geral', FolderKanban],
-  ['Produtores', UsersRound],
-  ['Propriedades', LandPlot],
   ['Solicitações', ClipboardCheck],
+  ['Produtores', UsersRound],
+  ['Propriedades', Building2],
   ['Documentos', FileSearch],
+  ['Mapas', Map],
   ['Viabilidade', BarChart3],
   ['Comitê', Scale],
   ['Configurações', Settings],
@@ -102,6 +109,7 @@ const sectionInfo: Record<string, string> = {
   Propriedades: 'Áreas, posse e referências documentais do produtor.',
   Solicitações: 'Dados da operação e premissas para a análise.',
   Documentos: 'Originais preservados, leitura assistida e conferência humana.',
+  Mapas: 'Localização e referências das propriedades da operação.',
   Viabilidade:
     'Capacidade de pagamento calculada a partir dos valores informados.',
   Comitê: 'Parecer humano vinculado à versão da análise.',
@@ -317,7 +325,7 @@ export default function Operational() {
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [search, setSearch] = useState(''),
-    [mobile, setMobile] = useState(false);
+    [propertyId, setPropertyId] = useState('');
   const [users, setUsers] = useState<Row[]>([]),
     [events, setEvents] = useState<Row[]>([]),
     [tab, setTab] = useState('Resumo'),
@@ -343,6 +351,7 @@ export default function Operational() {
         if (live) {
           setMe(u);
           setState(s);
+          if (s.requests.length) setSelected(s.requests[0].id);
         }
       })
       .catch((e) => live && setError(e.message))
@@ -420,7 +429,6 @@ export default function Operational() {
   function go(label: string) {
     setActive(label);
     setSearch('');
-    setMobile(false);
   }
   async function saveModal(payload: Row) {
     const m = modal!;
@@ -537,97 +545,54 @@ export default function Operational() {
       </table>
     </div>
   );
+  function openDossier() {
+    setTab('Dossiê');
+    go('Comitê');
+  }
+  function openStage(label: string) {
+    if (label === 'Cadastro') {
+      if (!write) {
+        go('Solicitações');
+        return;
+      }
+      setModal(
+        req
+          ? { kind: 'request', item: req }
+          : { kind: state.producers.length ? 'request' : 'producer' },
+      );
+    } else if (label === 'Dossiê') openDossier();
+    else go(label === 'Validação' ? 'Documentos' : label);
+  }
   return (
-    <div className="real-app">
-      <aside className={'r-sidebar' + (mobile ? ' r-open' : '')}>
-        <div className="r-brand">
-          <div>
-            <Tractor size={24} />
-          </div>
-          <span>
-            CRÉDITO <b>C149</b>
-            <small>GESTÃO DE CRÉDITO RURAL</small>
-          </span>
-          <button
-            className="r-mobile r-icon-btn"
-            onClick={() => setMobile(false)}
-            aria-label="Fechar menu"
-          >
-            <X size={20} />
-          </button>
-        </div>
-        <div className="r-workspace">
-          <span className="r-dot" />
-          Ambiente operacional<small>Carteira da unidade</small>
-        </div>
-        <nav>
-          {nav.map(([label, Icon]) => (
-            <button
-              key={label}
-              onClick={() => go(label)}
-              className={active === label ? 'active' : ''}
-            >
-              <Icon size={19} />
-              {label}
-              {label === 'Solicitações' && <span>{state.requests.length}</span>}
-            </button>
-          ))}
-        </nav>
-        <div className="r-sidebar-bottom">
-          <ShieldCheck size={18} />
-          <div>
-            {me?.name || 'Acesso autenticado'}
-            <small>{roleNames[me?.role || ''] || 'Carregando'}</small>
-          </div>
-        </div>
-        <a className="r-demo-link" href="/?demo=1">
-          Abrir demonstração visual ↗
-        </a>
-      </aside>
-      <div className="r-main">
-        <header className="r-topbar">
-          <button
-            className="r-mobile r-icon-btn"
-            onClick={() => setMobile(true)}
-            aria-label="Abrir menu"
-          >
-            <Menu size={23} />
-          </button>
-          <div>
-            <span>Carteira rural</span>
-            <b> / {active}</b>
-          </div>
-          <div className="r-top-actions">
-            <span className="r-badge r-badge-reviewed">
-              <Database size={13} />
-              Dados reais
-            </span>
-            <button
-              className="r-icon-btn"
-              disabled={busy || loading}
-              onClick={() => act(() => refresh(), 'Dados atualizados.')}
-              aria-label="Atualizar dados"
-            >
-              <RefreshCw size={17} />
-            </button>
-          </div>
-        </header>
-        <main className="r-content">
+    <TechnicalShell
+      navigation={nav}
+      active={active}
+      onNavigate={go}
+      me={me}
+      requests={state.requests}
+      selected={selected}
+      onSelect={(id) => openRequest(id, active)}
+      onNew={() =>
+        setModal({ kind: state.producers.length ? 'request' : 'producer' })
+      }
+      hasProducers={!!state.producers.length}
+      busy={busy || loading}
+      onRefresh={() => act(() => refresh(), 'Dados atualizados.')}
+    >
+      <main className="workspace r-content">
+        <TechnicalSummary
+          detail={detail}
+          properties={state.properties}
+          onStage={openStage}
+          onDossier={openDossier}
+        />
+        {!['Visão geral', 'Mapas'].includes(active) && (
           <div className="r-page-title">
             <div>
               <div className="r-eyebrow">CRÉDITO RURAL · C149</div>
               <h1>{active}</h1>
               <p>{sectionInfo[active]}</p>
             </div>
-            {write && ['Visão geral', 'Solicitações'].includes(active) && (
-              <Btn
-                onClick={() => setModal({ kind: 'request' })}
-                disabled={!state.producers.length}
-              >
-                <Plus size={17} />
-                Nova solicitação
-              </Btn>
-            )}
             {write && active === 'Produtores' && (
               <Btn onClick={() => setModal({ kind: 'producer' })}>
                 <Plus size={17} />
@@ -644,966 +609,893 @@ export default function Operational() {
               </Btn>
             )}
           </div>
-          {error && (
-            <div role="alert" className="r-alert r-error">
-              <span>{error}</span>
-              <button onClick={() => setError('')} aria-label="Fechar aviso">
-                <X size={16} />
-              </button>
-            </div>
-          )}
-          {notice && (
-            <div role="status" className="r-alert r-success">
-              <Check size={17} />
-              {notice}
-            </div>
-          )}
-          {loading ? (
-            <div className="r-empty">
-              <LoaderCircle className="r-spin" />
-              <p>Consultando a carteira…</p>
-            </div>
-          ) : !me ? (
-            <Empty
-              title="Acesso indisponível"
-              text="Recarregue a página para tentar novamente."
-            />
-          ) : (
-            <>
-              {active === 'Visão geral' && (
-                <>
-                  <Metrics
-                    items={[
-                      {
-                        label: 'Produtores cadastrados',
-                        value: state.producers.length,
-                        note: 'Cadastros persistidos',
-                      },
-                      {
-                        label: 'Área cadastrada',
-                        value: (
-                          <>
-                            {num(
-                              state.properties.reduce(
-                                (n, p) => n + Number(p.area_ha),
-                                0,
-                              ),
-                            )}{' '}
-                            <em>ha</em>
-                          </>
-                        ),
-                        note: state.properties.length + ' propriedades',
-                      },
-                      {
-                        label: 'Crédito em solicitações',
-                        value: money(
-                          state.requests.reduce(
-                            (n, r) => n + (r.data.principal || 0),
+        )}
+        {error && (
+          <div role="alert" className="r-alert r-error">
+            <span>{error}</span>
+            <button onClick={() => setError('')} aria-label="Fechar aviso">
+              <X size={16} />
+            </button>
+          </div>
+        )}
+        {notice && (
+          <div role="status" className="r-alert r-success">
+            <Check size={17} />
+            {notice}
+          </div>
+        )}
+        {loading ? (
+          <div className="r-empty">
+            <LoaderCircle className="r-spin" />
+            <p>Consultando a carteira…</p>
+          </div>
+        ) : !me ? (
+          <Empty
+            title="Acesso indisponível"
+            text="Recarregue a página para tentar novamente."
+          />
+        ) : (
+          <>
+            {['Visão geral', 'Mapas'].includes(active) && (
+              <TechnicalOverview
+                detail={detail}
+                properties={selected && !detail ? [] : state.properties}
+                selectedPropertyId={propertyId}
+                onProperty={setPropertyId}
+                onEditProperty={(property) =>
+                  setModal({ kind: 'property', item: property })
+                }
+                onNavigate={go}
+                onStart={() =>
+                  setModal({
+                    kind: state.producers.length ? 'property' : 'producer',
+                  })
+                }
+                writable={write}
+                hasProducers={!!state.producers.length}
+                currentDoc={currentDoc}
+                onDoc={setDocId}
+              />
+            )}
+            {active === 'Visão geral' && (
+              <Panel
+                title="Carteira da unidade"
+                subtitle="Totais dos cadastros da unidade"
+                actions={
+                  <button
+                    className="r-text-link"
+                    onClick={() => go('Solicitações')}
+                  >
+                    Todas as solicitações
+                  </button>
+                }
+              >
+                <Metrics
+                  items={[
+                    {
+                      label: 'Produtores cadastrados',
+                      value: state.producers.length,
+                      note: 'Cadastros na unidade',
+                    },
+                    {
+                      label: 'Área cadastrada',
+                      value:
+                        num(
+                          state.properties.reduce(
+                            (sum, p) => sum + Number(p.area_ha),
                             0,
                           ),
+                        ) + ' ha',
+                      note: state.properties.length + ' propriedades',
+                    },
+                    {
+                      label: 'Crédito em solicitações',
+                      value: money(
+                        state.requests.reduce(
+                          (sum, r) => sum + (r.data.principal || 0),
+                          0,
                         ),
-                        note: 'Valores informados, sem concessão',
-                      },
-                      {
-                        label: 'Pareceres registrados',
-                        value: state.requests.filter(
-                          (r) => r.status === 'parecer_registrado',
-                        ).length,
-                        note: 'Decisões humanas documentadas',
-                      },
-                    ]}
+                      ),
+                      note: 'Valores informados, sem concessão',
+                    },
+                    {
+                      label: 'Pareceres registrados',
+                      value: state.requests.filter(
+                        (r) => r.status === 'parecer_registrado',
+                      ).length,
+                      note: 'Decisões humanas documentadas',
+                    },
+                  ]}
+                />
+              </Panel>
+            )}
+            {active === 'Produtores' && (
+              <Panel
+                title="Cadastro de produtores"
+                subtitle={`${state.producers.length} registros na unidade`}
+                actions={
+                  <input
+                    className="r-search"
+                    placeholder="Buscar nome, CPF ou município"
+                    aria-label="Buscar produtor"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
                   />
-                  {!state.producers.length && (
-                    <div className="r-onboard">
-                      <div className="r-onboard-icon">
-                        <Tractor size={42} />
-                      </div>
-                      <div>
-                        <div className="r-eyebrow">COMECE PELA ORIGEM</div>
-                        <h2>Sua primeira análise começa com um produtor.</h2>
-                        <p>
-                          Cadastre o produtor e suas propriedades. Depois, abra
-                          a solicitação, envie os documentos e confira os dados
-                          antes de calcular.
-                        </p>
-                        {write && (
-                          <Btn onClick={() => setModal({ kind: 'producer' })}>
-                            <Plus size={17} />
-                            Cadastrar primeiro produtor
-                          </Btn>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <Panel
-                    title="Solicitações recentes"
-                    subtitle="Acompanhe o andamento de cada operação."
-                    actions={
-                      <button
-                        className="r-text-link"
-                        onClick={() => go('Solicitações')}
-                      >
-                        Ver todas →
-                      </button>
-                    }
-                  >
-                    {state.requests.length ? (
-                      requestList(state.requests.slice(0, 8))
-                    ) : (
-                      <Empty
-                        title="Nenhuma solicitação cadastrada"
-                        text="Os dados da demonstração não fazem parte desta carteira."
-                      />
-                    )}
-                  </Panel>
-                  <div className="r-two-col">
-                    <Panel
-                      title="Leitura com conferência"
-                      subtitle="Do original ao valor usado na análise."
-                    >
-                      <div className="r-process">
-                        <div>
-                          <span>01</span>
-                          <b>Enviar documento</b>
-                          <p>PDF, imagem ou TXT vinculado à solicitação.</p>
-                        </div>
-                        <div>
-                          <span>02</span>
-                          <b>Conferir leitura</b>
-                          <p>
-                            Revise o texto, os números e a referência de origem.
-                          </p>
-                        </div>
-                        <div>
-                          <span>03</span>
-                          <b>Calcular e registrar</b>
-                          <p>Analise os cenários e documente o parecer.</p>
-                        </div>
-                      </div>
-                    </Panel>
-                    <Panel
-                      title="Fontes externas"
-                      subtitle="Situação das integrações desta versão."
-                    >
-                      <div className="r-info-list">
-                        {[
-                          'CAR / SICAR',
-                          'SIGEF / INCRA',
-                          'Séries climáticas',
-                          'Laudos e mapas de solo',
-                        ].map((s) => (
-                          <div key={s}>
-                            <span>{s}</span>
-                            <span className="r-muted">Não conectado</span>
-                          </div>
-                        ))}
-                      </div>
-                      <p className="r-footnote">
-                        Registros e laudos podem ser anexados e conferidos
-                        manualmente. A plataforma não confirma regularidade
-                        ambiental ou fundiária.
-                      </p>
-                    </Panel>
-                  </div>
-                </>
-              )}
-              {active === 'Produtores' && (
-                <Panel
-                  title="Cadastro de produtores"
-                  subtitle={`${state.producers.length} registros na unidade`}
-                  actions={
-                    <input
-                      className="r-search"
-                      placeholder="Buscar nome, CPF ou município"
-                      aria-label="Buscar produtor"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                  }
-                >
-                  {state.producers.length ? (
-                    <div className="r-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Produtor</th>
-                            <th>CPF / CNPJ</th>
-                            <th>Município</th>
-                            <th>Contato</th>
-                            <th />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered(state.producers, [
-                            'name',
-                            'document',
-                            'municipality',
-                          ]).map((p) => (
-                            <tr key={p.id}>
-                              <td>
-                                <b>{p.name}</b>
-                                <small>
-                                  {
-                                    state.properties.filter(
-                                      (x) => x.producer_id === p.id,
-                                    ).length
-                                  }{' '}
-                                  propriedades
-                                </small>
-                              </td>
-                              <td>{p.document || 'Não informado'}</td>
-                              <td>{p.municipality || '—'}</td>
-                              <td>{p.phone || '—'}</td>
-                              <td>
-                                {write && (
-                                  <button
-                                    className="r-text-link"
-                                    onClick={() =>
-                                      setModal({ kind: 'producer', item: p })
-                                    }
-                                  >
-                                    Editar
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <Empty
-                      title="Nenhum produtor cadastrado"
-                      text="Use Novo produtor para iniciar sua carteira."
-                    />
-                  )}
-                </Panel>
-              )}
-              {active === 'Propriedades' && (
-                <>
-                  <Panel
-                    title="Propriedades rurais"
-                    subtitle="Informações cadastrais declaradas; documentos disponíveis nas solicitações."
-                    actions={
-                      <input
-                        className="r-search"
-                        placeholder="Buscar propriedade ou município"
-                        aria-label="Buscar propriedade"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                      />
-                    }
-                  >
-                    {state.properties.length ? (
-                      <div className="r-property-grid">
-                        {filtered(state.properties, [
+                }
+              >
+                {state.producers.length ? (
+                  <div className="r-table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Produtor</th>
+                          <th>CPF / CNPJ</th>
+                          <th>Município</th>
+                          <th>Contato</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filtered(state.producers, [
                           'name',
+                          'document',
                           'municipality',
-                          'car',
                         ]).map((p) => (
-                          <article className="r-property" key={p.id}>
-                            <div className="r-row">
-                              <Building2 size={23} />
-                              <Badge value={p.tenure} />
-                            </div>
-                            <h3>{p.name}</h3>
-                            <p>
-                              {
-                                state.producers.find(
-                                  (x) => x.id === p.producer_id,
-                                )?.name
-                              }
-                            </p>
-                            <dl>
-                              <div>
-                                <dt>Área</dt>
-                                <dd>{num(p.area_ha)} ha</dd>
-                              </div>
-                              <div>
-                                <dt>Município</dt>
-                                <dd>{p.municipality}</dd>
-                              </div>
-                              <div>
-                                <dt>CAR declarado</dt>
-                                <dd>{p.car || 'Não informado'}</dd>
-                              </div>
-                              <div>
-                                <dt>Matrícula / contrato</dt>
-                                <dd>{p.registry || 'Não informado'}</dd>
-                              </div>
-                            </dl>
-                            <div className="r-row">
+                          <tr key={p.id}>
+                            <td>
+                              <b>{p.name}</b>
+                              <small>
+                                {
+                                  state.properties.filter(
+                                    (x) => x.producer_id === p.id,
+                                  ).length
+                                }{' '}
+                                propriedades
+                              </small>
+                            </td>
+                            <td>{p.document || 'Não informado'}</td>
+                            <td>{p.municipality || '—'}</td>
+                            <td>{p.phone || '—'}</td>
+                            <td>
                               {write && (
                                 <button
                                   className="r-text-link"
                                   onClick={() =>
-                                    setModal({ kind: 'property', item: p })
+                                    setModal({ kind: 'producer', item: p })
                                   }
                                 >
-                                  Editar cadastro
+                                  Editar
                                 </button>
                               )}
-                              {p.latitude != null && (
-                                <a
-                                  className="r-text-link"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  href={
-                                    'https://www.google.com/maps?q=' +
-                                    encodeURIComponent(
-                                      p.latitude + ',' + p.longitude,
-                                    )
-                                  }
-                                >
-                                  Ver coordenada ↗
-                                </a>
-                              )}
-                            </div>
-                          </article>
+                            </td>
+                          </tr>
                         ))}
-                      </div>
-                    ) : (
-                      <Empty
-                        title="Nenhuma propriedade cadastrada"
-                        text={
-                          state.producers.length
-                            ? 'Cadastre área, posse e os vínculos documentais.'
-                            : 'Cadastre o produtor para adicionar suas propriedades.'
-                        }
-                      />
-                    )}
-                  </Panel>
-                  <div className="r-alert">
-                    Coordenadas representam um ponto informado, não o perímetro
-                    do imóvel. CAR e matrícula precisam de conferência
-                    documental.
+                      </tbody>
+                    </table>
                   </div>
-                </>
-              )}
-              {active === 'Solicitações' && !selected && (
+                ) : (
+                  <Empty
+                    title="Nenhum produtor cadastrado"
+                    text="Use Novo produtor para iniciar sua carteira."
+                  />
+                )}
+              </Panel>
+            )}
+            {active === 'Propriedades' && (
+              <>
                 <Panel
-                  title="Todas as solicitações"
+                  title="Propriedades rurais"
+                  subtitle="Informações cadastrais declaradas; documentos disponíveis nas solicitações."
                   actions={
                     <input
                       className="r-search"
-                      placeholder="Buscar solicitação ou produtor"
-                      aria-label="Buscar solicitação"
+                      placeholder="Buscar propriedade ou município"
+                      aria-label="Buscar propriedade"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
                   }
                 >
-                  {state.requests.length ? (
-                    requestList(
-                      filtered(state.requests, ['title', 'producer_name']),
-                    )
+                  {state.properties.length ? (
+                    <div className="r-property-grid">
+                      {filtered(state.properties, [
+                        'name',
+                        'municipality',
+                        'car',
+                      ]).map((p) => (
+                        <article className="r-property" key={p.id}>
+                          <div className="r-row">
+                            <Building2 size={23} />
+                            <Badge value={p.tenure} />
+                          </div>
+                          <h3>{p.name}</h3>
+                          <p>
+                            {
+                              state.producers.find(
+                                (x) => x.id === p.producer_id,
+                              )?.name
+                            }
+                          </p>
+                          <dl>
+                            <div>
+                              <dt>Área</dt>
+                              <dd>{num(p.area_ha)} ha</dd>
+                            </div>
+                            <div>
+                              <dt>Município</dt>
+                              <dd>{p.municipality}</dd>
+                            </div>
+                            <div>
+                              <dt>CAR declarado</dt>
+                              <dd>{p.car || 'Não informado'}</dd>
+                            </div>
+                            <div>
+                              <dt>Matrícula / contrato</dt>
+                              <dd>{p.registry || 'Não informado'}</dd>
+                            </div>
+                          </dl>
+                          <div className="r-row">
+                            {write && (
+                              <button
+                                className="r-text-link"
+                                onClick={() =>
+                                  setModal({ kind: 'property', item: p })
+                                }
+                              >
+                                Editar cadastro
+                              </button>
+                            )}
+                            {p.latitude != null && (
+                              <a
+                                className="r-text-link"
+                                target="_blank"
+                                rel="noreferrer"
+                                href={
+                                  'https://www.google.com/maps?q=' +
+                                  encodeURIComponent(
+                                    p.latitude + ',' + p.longitude,
+                                  )
+                                }
+                              >
+                                Ver coordenada ↗
+                              </a>
+                            )}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
                   ) : (
                     <Empty
-                      title="Nenhuma solicitação cadastrada"
+                      title="Nenhuma propriedade cadastrada"
                       text={
                         state.producers.length
-                          ? 'Crie uma solicitação para reunir os dados e documentos da operação.'
-                          : 'Cadastre primeiro um produtor na aba Produtores.'
+                          ? 'Cadastre área, posse e os vínculos documentais.'
+                          : 'Cadastre o produtor para adicionar suas propriedades.'
                       }
                     />
                   )}
                 </Panel>
-              )}
-              {['Documentos', 'Viabilidade', 'Comitê'].includes(active) &&
-                requestSelector}
-              {active === 'Solicitações' && selected && (
-                <>
-                  <button
-                    className="r-text-link r-back"
-                    onClick={() => setSelected('')}
-                  >
-                    ← Todas as solicitações
-                  </button>
-                  {requestSelector}
-                </>
-              )}
-              {['Solicitações', 'Documentos', 'Viabilidade', 'Comitê'].includes(
-                active,
-              ) &&
-                selected &&
-                !detail && (
-                  <div className="r-empty">
-                    <LoaderCircle className="r-spin" />
-                    <p>Carregando a solicitação…</p>
-                  </div>
-                )}
-              {['Documentos', 'Viabilidade', 'Comitê'].includes(active) &&
-                !selected && (
+                <div className="r-alert">
+                  Coordenadas representam um ponto informado, não o perímetro do
+                  imóvel. CAR e matrícula precisam de conferência documental.
+                </div>
+              </>
+            )}
+            {active === 'Solicitações' && !selected && (
+              <Panel
+                title="Todas as solicitações"
+                actions={
+                  <input
+                    className="r-search"
+                    placeholder="Buscar solicitação ou produtor"
+                    aria-label="Buscar solicitação"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                }
+              >
+                {state.requests.length ? (
+                  requestList(
+                    filtered(state.requests, ['title', 'producer_name']),
+                  )
+                ) : (
                   <Empty
-                    title="Selecione uma solicitação"
-                    text="Os documentos, cálculos e pareceres pertencem a uma operação específica."
+                    title="Nenhuma solicitação cadastrada"
+                    text={
+                      state.producers.length
+                        ? 'Crie uma solicitação para reunir os dados e documentos da operação.'
+                        : 'Cadastre primeiro um produtor na aba Produtores.'
+                    }
                   />
                 )}
-              {detail && req && active === 'Solicitações' && (
-                <>
-                  <div className="r-request-banner">
-                    <div>
-                      <Badge value={req.status} />
-                      <h2>{req.title}</h2>
-                      <p>
-                        {req.producer_name} · Revisão {req.revision} ·{' '}
-                        {date(req.updated_at)}
-                      </p>
-                    </div>
-                    {write && (
-                      <Btn
-                        secondary
-                        onClick={() => setModal({ kind: 'request', item: req })}
-                      >
-                        <Save size={16} />
-                        Editar dados
-                      </Btn>
-                    )}
+              </Panel>
+            )}
+            {['Documentos', 'Viabilidade', 'Comitê'].includes(active) &&
+              requestSelector}
+            {active === 'Solicitações' && selected && (
+              <>
+                <button
+                  className="r-text-link r-back"
+                  onClick={() => setSelected('')}
+                >
+                  ← Todas as solicitações
+                </button>
+                {requestSelector}
+              </>
+            )}
+            {['Solicitações', 'Documentos', 'Viabilidade', 'Comitê'].includes(
+              active,
+            ) &&
+              selected &&
+              !detail && (
+                <div className="r-empty">
+                  <LoaderCircle className="r-spin" />
+                  <p>Carregando a solicitação…</p>
+                </div>
+              )}
+            {['Documentos', 'Viabilidade', 'Comitê'].includes(active) &&
+              !selected && (
+                <Empty
+                  title="Selecione uma solicitação"
+                  text="Os documentos, cálculos e pareceres pertencem a uma operação específica."
+                />
+              )}
+            {detail && req && active === 'Solicitações' && (
+              <>
+                <div className="r-request-banner">
+                  <div>
+                    <Badge value={req.status} />
+                    <h2>{req.title}</h2>
+                    <p>
+                      {req.producer_name} · Revisão {req.revision} ·{' '}
+                      {date(req.updated_at)}
+                    </p>
                   </div>
-                  <div className="r-tabs">
-                    {['Resumo', 'Histórico'].map((t) => (
-                      <button
-                        key={t}
-                        onClick={() => setTab(t)}
-                        className={t === tab ? 'active' : ''}
+                  {write && (
+                    <Btn
+                      secondary
+                      onClick={() => setModal({ kind: 'request', item: req })}
+                    >
+                      <Save size={16} />
+                      Editar dados
+                    </Btn>
+                  )}
+                </div>
+                <div className="r-tabs">
+                  {['Resumo', 'Histórico'].map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={t === tab ? 'active' : ''}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                {tab === 'Histórico' ? (
+                  <AuditTable rows={detail.audit} />
+                ) : (
+                  <>
+                    <Metrics
+                      items={[
+                        {
+                          label: 'Crédito solicitado',
+                          value: money(req.data.principal),
+                          note: req.data.purpose || 'Finalidade não informada',
+                        },
+                        {
+                          label: 'Prazo',
+                          value: req.data.termMonths ? (
+                            <>
+                              {req.data.termMonths} <em>meses</em>
+                            </>
+                          ) : (
+                            '—'
+                          ),
+                          note: 'Parcelas mensais · Price',
+                        },
+                        {
+                          label: 'Taxa mensal',
+                          value:
+                            req.data.monthlyRate != null
+                              ? num(req.data.monthlyRate, 4) + '%'
+                              : '—',
+                          note: 'Informada pelo analista',
+                        },
+                        {
+                          label: 'Documentos conferidos',
+                          value:
+                            detail.documents.filter(
+                              (d) => d.status === 'reviewed',
+                            ).length +
+                            '/' +
+                            detail.documents.length,
+                          note: 'Conferência humana',
+                        },
+                      ]}
+                    />
+                    <div className="r-two-col">
+                      <Panel
+                        title="Premissas financeiras"
+                        subtitle={
+                          'Período inicial: ' +
+                          (req.data.periodStart || 'não informado')
+                        }
                       >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                  {tab === 'Histórico' ? (
-                    <AuditTable rows={detail.audit} />
-                  ) : (
-                    <>
-                      <Metrics
-                        items={[
-                          {
-                            label: 'Crédito solicitado',
-                            value: money(req.data.principal),
-                            note:
-                              req.data.purpose || 'Finalidade não informada',
-                          },
-                          {
-                            label: 'Prazo',
-                            value: req.data.termMonths ? (
-                              <>
-                                {req.data.termMonths} <em>meses</em>
-                              </>
-                            ) : (
-                              '—'
-                            ),
-                            note: 'Parcelas mensais · Price',
-                          },
-                          {
-                            label: 'Taxa mensal',
-                            value:
-                              req.data.monthlyRate != null
-                                ? num(req.data.monthlyRate, 4) + '%'
-                                : '—',
-                            note: 'Informada pelo analista',
-                          },
-                          {
-                            label: 'Documentos conferidos',
-                            value:
-                              detail.documents.filter(
-                                (d) => d.status === 'reviewed',
-                              ).length +
-                              '/' +
-                              detail.documents.length,
-                            note: 'Conferência humana',
-                          },
-                        ]}
-                      />
-                      <div className="r-two-col">
-                        <Panel
-                          title="Premissas financeiras"
-                          subtitle={
-                            'Período inicial: ' +
-                            (req.data.periodStart || 'não informado')
-                          }
-                        >
-                          <div className="r-info-list">
-                            {Object.entries(fields).map(([key, label]) => (
+                        <div className="r-info-list">
+                          {Object.entries(fields).map(([key, label]) => (
+                            <div key={key}>
+                              <span>
+                                {label}
+                                <small>
+                                  {req.data.sources?.[key] ||
+                                    'Fonte não informada'}
+                                </small>
+                              </span>
+                              <b>{formatField(key, req.data[key])}</b>
+                            </div>
+                          ))}
+                        </div>
+                      </Panel>
+                      <div>
+                        <Panel title="Propriedades vinculadas">
+                          {state.properties
+                            .filter((p) => req.property_ids.includes(p.id))
+                            .map((p) => (
+                              <div className="r-linked" key={p.id}>
+                                <LandPlot size={21} />
+                                <div>
+                                  <b>{p.name}</b>
+                                  <p>
+                                    {num(p.area_ha)} ha · {p.tenure} ·{' '}
+                                    {p.municipality}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          {!req.property_ids.length && (
+                            <p className="r-footnote">
+                              Nenhuma propriedade vinculada.
+                            </p>
+                          )}
+                        </Panel>
+                        <Panel title="Informações técnicas">
+                          <div className="r-notes">
+                            {[
+                              ['history', 'Histórico produtivo'],
+                              ['soil', 'Solo e referências de laudos'],
+                              ['climate', 'Risco climático informado'],
+                              ['notes', 'Observações'],
+                            ].map(([key, label]) => (
                               <div key={key}>
-                                <span>
-                                  {label}
-                                  <small>
-                                    {req.data.sources?.[key] ||
-                                      'Fonte não informada'}
-                                  </small>
-                                </span>
-                                <b>{formatField(key, req.data[key])}</b>
+                                <h3>{label}</h3>
+                                <p>{req.data[key] || 'Não informado'}</p>
                               </div>
                             ))}
                           </div>
                         </Panel>
-                        <div>
-                          <Panel title="Propriedades vinculadas">
-                            {state.properties
-                              .filter((p) => req.property_ids.includes(p.id))
-                              .map((p) => (
-                                <div className="r-linked" key={p.id}>
-                                  <LandPlot size={21} />
-                                  <div>
-                                    <b>{p.name}</b>
-                                    <p>
-                                      {num(p.area_ha)} ha · {p.tenure} ·{' '}
-                                      {p.municipality}
-                                    </p>
-                                  </div>
-                                </div>
-                              ))}
-                            {!req.property_ids.length && (
-                              <p className="r-footnote">
-                                Nenhuma propriedade vinculada.
-                              </p>
-                            )}
-                          </Panel>
-                          <Panel title="Informações técnicas">
-                            <div className="r-notes">
-                              {[
-                                ['history', 'Histórico produtivo'],
-                                ['soil', 'Solo e referências de laudos'],
-                                ['climate', 'Risco climático informado'],
-                                ['notes', 'Observações'],
-                              ].map(([key, label]) => (
-                                <div key={key}>
-                                  <h3>{label}</h3>
-                                  <p>{req.data[key] || 'Não informado'}</p>
-                                </div>
-                              ))}
-                            </div>
-                          </Panel>
-                        </div>
                       </div>
-                      <div className="r-row r-next">
-                        <Btn secondary onClick={() => go('Documentos')}>
-                          <FileSearch size={17} />
-                          Conferir documentos
-                        </Btn>
-                        <Btn onClick={() => go('Viabilidade')}>
-                          <BarChart3 size={17} />
-                          Abrir viabilidade
-                        </Btn>
-                      </div>
-                    </>
-                  )}
-                </>
-              )}
-              {detail && active === 'Documentos' && (
-                <>
-                  <Panel
-                    title="Documentos da solicitação"
-                    subtitle="Até 10 MB por arquivo e 20 páginas por PDF. Leitura de texto e OCR em português."
-                    actions={
-                      write && (
-                        <label
-                          className={'r-btn' + (busy ? ' r-disabled' : '')}
-                        >
-                          <Upload size={16} />
-                          {busy ? 'Enviando…' : 'Enviar documento'}
-                          <input
-                            type="file"
-                            accept=".pdf,.png,.jpg,.jpeg,.txt"
-                            hidden
-                            disabled={busy}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) void upload(file);
-                              e.target.value = '';
-                            }}
-                          />
-                        </label>
-                      )
-                    }
-                  >
-                    {detail.documents.length ? (
-                      <div className="r-document-layout">
-                        <div className="r-document-list">
-                          {detail.documents.map((d) => (
-                            <button
-                              key={d.id}
-                              onClick={() => setDocId(d.id)}
-                              className={
-                                currentDoc?.id === d.id ? 'active' : ''
-                              }
-                            >
-                              <FileSearch size={19} />
-                              <span>
-                                <b>{d.name}</b>
-                                <Badge value={d.status} />
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                        {currentDoc && (
-                          <DocumentReview
-                            key={
-                              currentDoc.id +
-                              ':' +
-                              (currentDoc.reviewed_at || currentDoc.status)
-                            }
-                            doc={currentDoc}
-                            request={req!}
-                            writable={write}
-                            busy={busy}
-                            save={(data) =>
-                              act(async () => {
-                                await api(
-                                  '/documents/' + currentDoc.id + '/review',
-                                  'POST',
-                                  data,
-                                );
-                                await refresh();
-                              }, 'Conferência registrada. Os valores ainda precisam ser aplicados à solicitação.')
-                            }
-                            apply={(keys) =>
-                              act(async () => {
-                                await api(
-                                  '/documents/' + currentDoc.id + '/apply',
-                                  'POST',
-                                  { keys, revision: req!.revision },
-                                );
-                                await refresh();
-                              }, 'Campos conferidos aplicados à solicitação, com a referência do documento.')
-                            }
-                          />
-                        )}
-                      </div>
-                    ) : (
-                      <Empty
-                        title="Adicione os documentos da operação"
-                        text="Envie demonstrativos, propostas, laudos e documentos de cadastro. O original permanece disponível para download."
-                      />
-                    )}
-                  </Panel>
-                </>
-              )}
-              {detail && active === 'Viabilidade' && (
-                <>
-                  <div className="r-analysis-actions">
-                    <p>
-                      Use os dados salvos da solicitação. Cada cálculo cria uma
-                      versão para consulta.
-                    </p>
-                    {write && (
-                      <Btn
-                        disabled={busy}
-                        onClick={() =>
-                          act(async () => {
-                            const a = await api(
-                              '/requests/' + selected + '/analyze',
-                              'POST',
-                            );
-                            setAnalysisId(a.id);
-                            await refresh();
-                          }, 'Análise calculada e registrada no histórico.')
-                        }
-                      >
-                        <BarChart3 size={17} />
-                        {busy ? 'Calculando…' : 'Calcular análise'}
+                    </div>
+                    <div className="r-row r-next">
+                      <Btn secondary onClick={() => go('Documentos')}>
+                        <FileSearch size={17} />
+                        Conferir documentos
                       </Btn>
-                    )}
-                  </div>
-                  {detail.analyses.length > 0 && (
-                    <label className="r-selector">
-                      <span>Versão da análise</span>
-                      <select
-                        value={currentAnalysis?.id || ''}
-                        onChange={(e) => setAnalysisId(e.target.value)}
-                      >
-                        {detail.analyses.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {date(a.created_at)} · revisão {a.source_revision}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  {currentAnalysis ? (
-                    <>
-                      <AnalysisView
-                        analysis={currentAnalysis}
-                        currentRevision={req!.revision}
-                      />
-                      <div className="r-row r-next">
-                        <Btn
-                          secondary
-                          onClick={() => {
-                            setTab('Dossiê');
-                            go('Comitê');
+                      <Btn onClick={() => go('Viabilidade')}>
+                        <BarChart3 size={17} />
+                        Abrir viabilidade
+                      </Btn>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            {detail && active === 'Documentos' && (
+              <>
+                <Panel
+                  title="Documentos da solicitação"
+                  subtitle="Até 10 MB por arquivo e 20 páginas por PDF. Leitura de texto e OCR em português."
+                  actions={
+                    write && (
+                      <label className={'r-btn' + (busy ? ' r-disabled' : '')}>
+                        <Upload size={16} />
+                        {busy ? 'Enviando…' : 'Enviar documento'}
+                        <input
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg,.txt"
+                          hidden
+                          disabled={busy}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) void upload(file);
+                            e.target.value = '';
                           }}
-                        >
-                          <Download size={17} />
-                          Abrir dossiê para PDF
-                        </Btn>
-                        <Btn onClick={() => go('Comitê')}>
-                          <Scale size={17} />
-                          Registrar parecer
-                        </Btn>
+                        />
+                      </label>
+                    )
+                  }
+                >
+                  {detail.documents.length ? (
+                    <div className="r-document-layout">
+                      <div className="r-document-list">
+                        {detail.documents.map((d) => (
+                          <button
+                            key={d.id}
+                            onClick={() => setDocId(d.id)}
+                            className={currentDoc?.id === d.id ? 'active' : ''}
+                          >
+                            <FileSearch size={19} />
+                            <span>
+                              <b>{d.name}</b>
+                              <Badge value={d.status} />
+                            </span>
+                          </button>
+                        ))}
                       </div>
-                    </>
+                      {currentDoc && (
+                        <DocumentReview
+                          key={
+                            currentDoc.id +
+                            ':' +
+                            (currentDoc.reviewed_at || currentDoc.status)
+                          }
+                          doc={currentDoc}
+                          request={req!}
+                          writable={write}
+                          busy={busy}
+                          save={(data) =>
+                            act(async () => {
+                              await api(
+                                '/documents/' + currentDoc.id + '/review',
+                                'POST',
+                                data,
+                              );
+                              await refresh();
+                            }, 'Conferência registrada. Os valores ainda precisam ser aplicados à solicitação.')
+                          }
+                          apply={(keys) =>
+                            act(async () => {
+                              await api(
+                                '/documents/' + currentDoc.id + '/apply',
+                                'POST',
+                                { keys, revision: req!.revision },
+                              );
+                              await refresh();
+                            }, 'Campos conferidos aplicados à solicitação, com a referência do documento.')
+                          }
+                        />
+                      )}
+                    </div>
                   ) : (
                     <Empty
-                      title="Nenhuma análise calculada"
-                      text="Informe os dados financeiros na solicitação e clique em Calcular análise. Campos em branco serão apontados como pendências."
+                      title="Adicione os documentos da operação"
+                      text="Envie demonstrativos, propostas, laudos e documentos de cadastro. O original permanece disponível para download."
                     />
                   )}
-                </>
-              )}
-              {detail && req && active === 'Comitê' && (
-                <>
-                  <div className="r-tabs">
-                    {['Parecer', 'Dossiê'].map((t) => (
-                      <button
-                        key={t}
-                        className={
-                          (tab === 'Dossiê' ? t === 'Dossiê' : t === 'Parecer')
-                            ? 'active'
-                            : ''
-                        }
-                        onClick={() => setTab(t)}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                  {tab === 'Dossiê' ? (
-                    currentAnalysis ? (
-                      <Dossier detail={detail} analysis={currentAnalysis} />
-                    ) : (
-                      <Empty
-                        title="O dossiê precisa de uma análise"
-                        text="Calcule a análise na aba Viabilidade, mesmo que ainda existam pendências."
-                      />
-                    )
-                  ) : (
-                    <>
-                      <Panel
-                        title="Parecer do responsável"
-                        subtitle="O sistema calcula indicadores. O responsável registra a decisão e sua justificativa."
-                      >
-                        {!detail.analyses.length ? (
-                          <p className="r-footnote">
-                            Execute a análise na aba Viabilidade para registrar
-                            um parecer.
-                          </p>
-                        ) : (
-                          <>
-                            <div className="r-alert">
-                              Análise de {date(detail.analyses[0].created_at)} ·
-                              revisão {detail.analyses[0].source_revision}.
-                              {detail.analyses[0].source_revision !==
-                              req.revision
-                                ? ' Os dados mudaram. Calcule uma nova análise antes de registrar o parecer.'
-                                : ''}
-                            </div>
-                            {me.role === 'admin' ? (
-                              <form
-                                className="r-form"
-                                onSubmit={(e) => {
-                                  e.preventDefault();
-                                  const v = values(e.currentTarget);
-                                  void act(async () => {
-                                    await api(
-                                      '/requests/' + selected + '/decision',
-                                      'POST',
-                                      {
-                                        ...v,
-                                        analysis_id: detail.analyses[0].id,
-                                      },
-                                    );
-                                    await refresh();
-                                  }, 'Parecer registrado com responsável, data e versão da análise.');
-                                }}
-                              >
-                                <label className="r-field">
-                                  <span>Parecer</span>
-                                  <select
-                                    name="decision"
-                                    required
-                                    defaultValue="complementacao"
-                                  >
-                                    <option value="complementacao">
-                                      Solicitar complementação
-                                    </option>
-                                    <option value="favoravel">Favorável</option>
-                                    <option value="desfavoravel">
-                                      Desfavorável
-                                    </option>
-                                  </select>
-                                </label>
-                                <Field
-                                  label="Justificativa e condições"
-                                  name="justification"
-                                  type="textarea"
-                                  required
-                                  minLength={30}
-                                  maxLength={5000}
-                                  help="Explique a decisão, as ressalvas e as condições. Mínimo de 30 caracteres."
-                                  wide
-                                />
-                                <div className="r-wide r-form-actions">
-                                  <Btn
-                                    type="submit"
-                                    disabled={
-                                      busy ||
-                                      detail.analyses[0].source_revision !==
-                                        req.revision
-                                    }
-                                  >
-                                    <ClipboardCheck size={17} />
-                                    Registrar parecer
-                                  </Btn>
-                                </div>
-                              </form>
-                            ) : (
-                              <p className="r-footnote">
-                                Seu perfil permite consultar pareceres. Apenas o
-                                administrador registra decisões.
-                              </p>
-                            )}
-                            <p className="r-footnote">
-                              Parecer favorável exige cálculo completo,
-                              propriedade vinculada, fontes financeiras
-                              informadas e todos os documentos conferidos. Não
-                              representa liberação bancária de crédito.
-                            </p>
-                          </>
-                        )}
-                      </Panel>
-                      <Panel title="Histórico de pareceres">
-                        {detail.decisions.length ? (
-                          <div className="r-decisions">
-                            {detail.decisions.map((d) => (
-                              <article key={d.id}>
-                                <Badge value={d.decision} />
-                                <p>{d.justification}</p>
-                                <small>
-                                  {d.actor_name} · {date(d.created_at)} ·
-                                  análise {d.analysis_id.slice(0, 8)}
-                                </small>
-                              </article>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="r-footnote">
-                            Nenhum parecer registrado.
-                          </p>
-                        )}
-                      </Panel>
-                    </>
+                </Panel>
+              </>
+            )}
+            {detail && active === 'Viabilidade' && (
+              <>
+                <div className="r-analysis-actions">
+                  <p>
+                    Use os dados salvos da solicitação. Cada cálculo cria uma
+                    versão para consulta.
+                  </p>
+                  {write && (
+                    <Btn
+                      disabled={busy}
+                      onClick={() =>
+                        act(async () => {
+                          const a = await api(
+                            '/requests/' + selected + '/analyze',
+                            'POST',
+                          );
+                          setAnalysisId(a.id);
+                          await refresh();
+                        }, 'Análise calculada e registrada no histórico.')
+                      }
+                    >
+                      <BarChart3 size={17} />
+                      {busy ? 'Calculando…' : 'Calcular análise'}
+                    </Btn>
                   )}
-                </>
-              )}
-              {active === 'Configurações' && (
-                <>
-                  <Panel
-                    title="Meu acesso"
-                    subtitle={`${me.name} · ${roleNames[me.role]}`}
-                    actions={
+                </div>
+                {detail.analyses.length > 0 && (
+                  <label className="r-selector">
+                    <span>Versão da análise</span>
+                    <select
+                      value={currentAnalysis?.id || ''}
+                      onChange={(e) => setAnalysisId(e.target.value)}
+                    >
+                      {detail.analyses.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {date(a.created_at)} · revisão {a.source_revision}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {currentAnalysis ? (
+                  <>
+                    <AnalysisView
+                      analysis={currentAnalysis}
+                      currentRevision={req!.revision}
+                    />
+                    <div className="r-row r-next">
                       <Btn
                         secondary
-                        onClick={() => setModal({ kind: 'password' })}
+                        onClick={() => {
+                          setTab('Dossiê');
+                          go('Comitê');
+                        }}
                       >
-                        Alterar minha senha
+                        <Download size={17} />
+                        Abrir dossiê para PDF
                       </Btn>
-                    }
-                  >
-                    <p className="r-footnote">
-                      Os acessos pertencem a esta unidade. Administradores e
-                      analistas trabalham na mesma carteira; usuários de
-                      consulta têm acesso somente à leitura. O login é
-                      solicitado pelo navegador.
-                    </p>
-                  </Panel>
-                  {me.role === 'admin' && (
-                    <>
-                      <Panel
-                        title="Usuários da unidade"
-                        actions={
-                          <Btn onClick={() => setModal({ kind: 'user' })}>
-                            <Plus size={17} />
-                            Novo usuário
-                          </Btn>
-                        }
-                      >
-                        <div className="r-table-wrap">
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>Nome</th>
-                                <th>Usuário</th>
-                                <th>Perfil</th>
-                                <th>Estado</th>
-                                <th />
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {users.map((u) => (
-                                <tr key={u.id}>
-                                  <td>{u.name}</td>
-                                  <td>{u.username}</td>
-                                  <td>{roleNames[u.role]}</td>
-                                  <td>{u.active ? 'Ativo' : 'Desativado'}</td>
-                                  <td>
-                                    {u.id !== me.id && (
-                                      <button
-                                        className="r-text-link"
-                                        disabled={busy}
-                                        onClick={() =>
-                                          act(async () => {
-                                            await api('/users/' + u.id, 'PUT', {
-                                              active: !u.active,
-                                            });
-                                            setUsers(await api('/users'));
-                                          }, 'Acesso atualizado.')
-                                        }
-                                      >
-                                        {u.active ? 'Desativar' : 'Reativar'}
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                      <Btn onClick={() => go('Comitê')}>
+                        <Scale size={17} />
+                        Registrar parecer
+                      </Btn>
+                    </div>
+                  </>
+                ) : (
+                  <Empty
+                    title="Nenhuma análise calculada"
+                    text="Informe os dados financeiros na solicitação e clique em Calcular análise. Campos em branco serão apontados como pendências."
+                  />
+                )}
+              </>
+            )}
+            {detail && req && active === 'Comitê' && (
+              <>
+                <div className="r-tabs">
+                  {['Parecer', 'Dossiê'].map((t) => (
+                    <button
+                      key={t}
+                      className={
+                        (tab === 'Dossiê' ? t === 'Dossiê' : t === 'Parecer')
+                          ? 'active'
+                          : ''
+                      }
+                      onClick={() => setTab(t)}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                {tab === 'Dossiê' ? (
+                  currentAnalysis ? (
+                    <Dossier detail={detail} analysis={currentAnalysis} />
+                  ) : (
+                    <Empty
+                      title="O dossiê precisa de uma análise"
+                      text="Calcule a análise na aba Viabilidade, mesmo que ainda existam pendências."
+                    />
+                  )
+                ) : (
+                  <>
+                    <Panel
+                      title="Parecer do responsável"
+                      subtitle="O sistema calcula indicadores. O responsável registra a decisão e sua justificativa."
+                    >
+                      {!detail.analyses.length ? (
+                        <p className="r-footnote">
+                          Execute a análise na aba Viabilidade para registrar um
+                          parecer.
+                        </p>
+                      ) : (
+                        <>
+                          <div className="r-alert">
+                            Análise de {date(detail.analyses[0].created_at)} ·
+                            revisão {detail.analyses[0].source_revision}.
+                            {detail.analyses[0].source_revision !== req.revision
+                              ? ' Os dados mudaram. Calcule uma nova análise antes de registrar o parecer.'
+                              : ''}
+                          </div>
+                          {me.role === 'admin' ? (
+                            <form
+                              className="r-form"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                const v = values(e.currentTarget);
+                                void act(async () => {
+                                  await api(
+                                    '/requests/' + selected + '/decision',
+                                    'POST',
+                                    {
+                                      ...v,
+                                      analysis_id: detail.analyses[0].id,
+                                    },
+                                  );
+                                  await refresh();
+                                }, 'Parecer registrado com responsável, data e versão da análise.');
+                              }}
+                            >
+                              <label className="r-field">
+                                <span>Parecer</span>
+                                <select
+                                  name="decision"
+                                  required
+                                  defaultValue="complementacao"
+                                >
+                                  <option value="complementacao">
+                                    Solicitar complementação
+                                  </option>
+                                  <option value="favoravel">Favorável</option>
+                                  <option value="desfavoravel">
+                                    Desfavorável
+                                  </option>
+                                </select>
+                              </label>
+                              <Field
+                                label="Justificativa e condições"
+                                name="justification"
+                                type="textarea"
+                                required
+                                minLength={30}
+                                maxLength={5000}
+                                help="Explique a decisão, as ressalvas e as condições. Mínimo de 30 caracteres."
+                                wide
+                              />
+                              <div className="r-wide r-form-actions">
+                                <Btn
+                                  type="submit"
+                                  disabled={
+                                    busy ||
+                                    detail.analyses[0].source_revision !==
+                                      req.revision
+                                  }
+                                >
+                                  <ClipboardCheck size={17} />
+                                  Registrar parecer
+                                </Btn>
+                              </div>
+                            </form>
+                          ) : (
+                            <p className="r-footnote">
+                              Seu perfil permite consultar pareceres. Apenas o
+                              administrador registra decisões.
+                            </p>
+                          )}
+                          <p className="r-footnote">
+                            Parecer favorável exige cálculo completo,
+                            propriedade vinculada, fontes financeiras informadas
+                            e todos os documentos conferidos. Não representa
+                            liberação bancária de crédito.
+                          </p>
+                        </>
+                      )}
+                    </Panel>
+                    <Panel title="Histórico de pareceres">
+                      {detail.decisions.length ? (
+                        <div className="r-decisions">
+                          {detail.decisions.map((d) => (
+                            <article key={d.id}>
+                              <Badge value={d.decision} />
+                              <p>{d.justification}</p>
+                              <small>
+                                {d.actor_name} · {date(d.created_at)} · análise{' '}
+                                {d.analysis_id.slice(0, 8)}
+                              </small>
+                            </article>
+                          ))}
                         </div>
-                      </Panel>
-                      <Panel
-                        title="Trilha de auditoria"
-                        subtitle="Últimos 300 eventos da unidade."
-                        actions={
-                          <Btn
-                            secondary
-                            onClick={() =>
-                              act(
-                                async () => setEvents(await api('/audit')),
-                                'Histórico atualizado.',
-                              )
-                            }
-                          >
-                            <RefreshCw size={15} />
-                            Atualizar
-                          </Btn>
-                        }
-                      >
-                        <AuditTable rows={events} />
-                      </Panel>
-                    </>
-                  )}
-                </>
-              )}
-            </>
-          )}
-          <footer className="r-footer">
-            <span>CRÉDITO C149 · Operação real</span>
-            <span>
-              Dados declarados + conferência documental + parecer humano
-            </span>
-          </footer>
-        </main>
-      </div>
+                      ) : (
+                        <p className="r-footnote">Nenhum parecer registrado.</p>
+                      )}
+                    </Panel>
+                  </>
+                )}
+              </>
+            )}
+            {active === 'Configurações' && (
+              <>
+                <Panel
+                  title="Meu acesso"
+                  subtitle={`${me.name} · ${roleNames[me.role]}`}
+                  actions={
+                    <Btn
+                      secondary
+                      onClick={() => setModal({ kind: 'password' })}
+                    >
+                      Alterar minha senha
+                    </Btn>
+                  }
+                >
+                  <p className="r-footnote">
+                    Os acessos pertencem a esta unidade. Administradores e
+                    analistas trabalham na mesma carteira; usuários de consulta
+                    têm acesso somente à leitura. O login é solicitado pelo
+                    navegador.
+                  </p>
+                </Panel>
+                {me.role === 'admin' && (
+                  <>
+                    <Panel
+                      title="Usuários da unidade"
+                      actions={
+                        <Btn onClick={() => setModal({ kind: 'user' })}>
+                          <Plus size={17} />
+                          Novo usuário
+                        </Btn>
+                      }
+                    >
+                      <div className="r-table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Nome</th>
+                              <th>Usuário</th>
+                              <th>Perfil</th>
+                              <th>Estado</th>
+                              <th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {users.map((u) => (
+                              <tr key={u.id}>
+                                <td>{u.name}</td>
+                                <td>{u.username}</td>
+                                <td>{roleNames[u.role]}</td>
+                                <td>{u.active ? 'Ativo' : 'Desativado'}</td>
+                                <td>
+                                  {u.id !== me.id && (
+                                    <button
+                                      className="r-text-link"
+                                      disabled={busy}
+                                      onClick={() =>
+                                        act(async () => {
+                                          await api('/users/' + u.id, 'PUT', {
+                                            active: !u.active,
+                                          });
+                                          setUsers(await api('/users'));
+                                        }, 'Acesso atualizado.')
+                                      }
+                                    >
+                                      {u.active ? 'Desativar' : 'Reativar'}
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Panel>
+                    <Panel
+                      title="Trilha de auditoria"
+                      subtitle="Últimos 300 eventos da unidade."
+                      actions={
+                        <Btn
+                          secondary
+                          onClick={() =>
+                            act(
+                              async () => setEvents(await api('/audit')),
+                              'Histórico atualizado.',
+                            )
+                          }
+                        >
+                          <RefreshCw size={15} />
+                          Atualizar
+                        </Btn>
+                      }
+                    >
+                      <AuditTable rows={events} />
+                    </Panel>
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
+        <footer className="r-footer">
+          <span>CRÉDITO C149 · Operação real</span>
+          <span>
+            Dados declarados + conferência documental + parecer humano
+          </span>
+        </footer>
+      </main>
       <Dialog
         open={!!modal}
         onOpenChange={(open) => {
@@ -1649,7 +1541,7 @@ export default function Operational() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </TechnicalShell>
   );
 }
 

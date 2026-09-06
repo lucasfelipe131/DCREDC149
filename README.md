@@ -6,6 +6,13 @@ separada em `/?demo=1`, identificada como fictícia e sem gravação no banco.
 
 ## Funcionalidades
 
+A interface operacional utiliza a composição original do Dossiê Rural: menu
+azul-escuro recolhível, etapas no topo, resumo da operação e painéis de mapa,
+propriedade, evidência documental e viabilidade. O painel de mapa exibe somente
+pontos cadastrados, com abertura do mapa-base OpenStreetMap e acesso ao satélite
+no Google Maps. Sem coordenadas ou documentos, apresenta o estado vazio
+correspondente; os exemplos fictícios permanecem apenas na apresentação separada.
+
 - Cadastro e edição de produtores (CPF/CNPJ opcional com validação de dígitos).
 - Propriedades, área, posse, município, CAR/matrícula declarados e ponto geográfico.
 - Solicitações com vínculos de propriedades do produtor, valores, período e fontes.
