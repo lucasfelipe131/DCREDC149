@@ -114,7 +114,9 @@ npm start
 
 O servidor só fica pronto após migração idempotente e bootstrap. `/health` verifica
 consulta ao banco, retornando `operational` e `postgresql`. Docker instala utilitários
-OCR e roda o servidor como usuário sem privilégios. O build Railway é independente
+OCR e roda o servidor como usuário sem privilégios. A imagem final instala somente
+o driver PostgreSQL e suas dependências; ferramentas de build e pacotes de SSR
+do protótipo não são carregados no runtime. O build Railway é independente
 de Sites. `npm run dev` é apenas a interface Vite; o uso completo local exige o
 servidor Node e o PostgreSQL, ou um proxy de `/api` configurado pelo desenvolvedor.
 

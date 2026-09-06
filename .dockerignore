@@ -4,3 +4,5 @@ node_modules
 dist
 dist-railway
 .wrangler
+
+**/node_modules
