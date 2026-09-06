@@ -4,6 +4,16 @@ Aplicação de apoio à análise de crédito rural. A rota `/` usa PostgreSQL pa
 cadastros, documentos, análises e pareceres. A demonstração original permanece
 separada em `/?demo=1`, identificada como fictícia e sem gravação no banco.
 
+## Projeto da evolução
+
+A [especificação de gestão de propostas de crédito rural](docs/ESPECIFICACAO-GESTAO-CREDITO-RURAL.md)
+detalha quatro perfis, matrículas compartilhadas, polígonos, culturas, apoio documental,
+revisão, dossiês versionados e relatórios sem duplicação de hectares. Inclui telas,
+modelo de dados, permissões por campo, fontes externas, migração e plano de entrega.
+É uma especificação para implementação; essas capacidades não estão todas disponíveis
+na versão operacional descrita abaixo. Regras de concessão e alçadas de crédito
+permanecem em aberto.
+
 ## Funcionalidades
 
 A interface operacional utiliza a composição original do Dossiê Rural: menu
