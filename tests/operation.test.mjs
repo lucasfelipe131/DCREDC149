@@ -155,6 +155,10 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
   await engine.exec(
     await readFile(new URL('../server/schema.sql', import.meta.url), 'utf8'),
   );
+  // A second startup must preserve the additive migration without errors.
+  await engine.exec(
+    await readFile(new URL('../server/schema.sql', import.meta.url), 'utf8'),
+  );
   const db = {
     query: (...args) => engine.query(...args),
     tx: (fn) => engine.transaction((tx) => fn(tx)),
@@ -201,7 +205,12 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
             ? body
             : JSON.stringify(body || {}),
     });
-    return { status: res.status, body: await res.json() };
+    return {
+      status: res.status,
+      body: res.headers.get('content-type')?.includes('json')
+        ? await res.json()
+        : await res.text(),
+    };
   }
   try {
     assert.equal((await call('/state', 'GET', null, null)).status, 401);
@@ -564,6 +573,131 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
       -28,
       'Snapshot antigo preserva localização anterior',
     );
+    const mappingPath = '/properties/' + property.body.id + '/mapping';
+    const totalArea = {
+      id: 'total-test',
+      name: 'Perímetro de teste',
+      kind: 'total',
+      registry: '123',
+      car: 'CAR informado',
+      sigef: 'SIGEF informado',
+      coordinates: [
+        [-54, -28],
+        [-53.99, -28],
+        [-53.99, -27.99],
+        [-54, -27.99],
+      ],
+    };
+    const cropArea = {
+      id: 'crop-test',
+      name: 'Talhão 1',
+      kind: 'productive',
+      parent_id: 'total-test',
+      crop: 'Soja',
+      season: '2026/2027',
+      coordinates: [
+        [-53.999, -27.999],
+        [-53.995, -27.999],
+        [-53.995, -27.995],
+        [-53.999, -27.995],
+      ],
+    };
+    const mapPayload = { revision: 0, features: [totalArea, cropArea] };
+    assert.equal((await call(mappingPath)).body.revision, 0);
+    assert.equal((await call(mappingPath, 'GET', null, null)).status, 401);
+    assert.equal(
+      (await call(mappingPath, 'PUT', mapPayload, 'viewer')).status,
+      403,
+    );
+    assert.equal(
+      (await call(mappingPath, 'PUT', { ...mapPayload, revision: undefined }))
+        .status,
+      400,
+    );
+    const requestBeforeMap = (await call('/requests/' + rid)).body.request
+      .revision;
+    const savedMap = await call(mappingPath, 'PUT', mapPayload, 'analyst');
+    assert.equal(savedMap.status, 200, JSON.stringify(savedMap));
+    assert.equal(savedMap.body.revision, 1);
+    assert.equal((await call(mappingPath, 'PUT', mapPayload)).status, 409);
+    assert.equal(
+      (await call('/requests/' + rid)).body.request.revision,
+      requestBeforeMap + 1,
+    );
+    const mappedOverview = (await call('/producers/' + pid + '/overview')).body;
+    assert.equal(mappedOverview.properties[0].mapping.features.length, 2);
+    assert.ok(
+      mappedOverview.history.some(
+        (e) => e.action === 'mapping_saved' && e.actor_name === 'analyst',
+      ),
+    );
+    assert.equal(
+      (await call('/producers/' + p2.body.id + '/overview')).body.properties
+        .length,
+      0,
+    );
+    const snapMapAnalysis = await call('/requests/' + rid + '/analyze', 'POST');
+    assert.equal(snapMapAnalysis.status, 201);
+    assert.equal(
+      (
+        await call(mappingPath, 'PUT', {
+          revision: 1,
+          features: [totalArea, { ...cropArea, crop: 'Milho' }],
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await call(mappingPath + '?revision=1')).body.features[1].crop,
+      'Soja',
+    );
+    assert.equal((await call(mappingPath)).body.features[1].crop, 'Milho');
+    assert.equal((await call(mappingPath + '/versions')).body.length, 2);
+    const frozen = (await call('/requests/' + rid)).body.analyses.find(
+      (a) => a.id === snapMapAnalysis.body.id,
+    ).snapshot.properties[0].mapping;
+    assert.equal(frozen.revision, 1);
+    assert.equal(frozen.features[1].crop, 'Soja');
+    const kml = await call(mappingPath + '/kml?revision=1');
+    assert.equal(kml.status, 200);
+    assert.ok(kml.body.includes('Soja'));
+    assert.ok(!kml.body.includes('Milho'));
+    assert.equal(
+      (await call(mappingPath + '/kml', 'GET', null, null)).status,
+      401,
+    );
+    assert.equal((await call(mappingPath + '?revision=999')).status, 404);
+    const newWithMap = await call('/properties', 'POST', {
+      producer_id: p2.body.id,
+      name: 'Imóvel com mapa no cadastro',
+      municipality: 'Teste / RS',
+      area_ha: 100,
+      tenure: 'Própria',
+      mapping: [totalArea, cropArea],
+      map_revision: 0,
+    });
+    assert.equal(newWithMap.status, 200, JSON.stringify(newWithMap));
+    assert.equal(
+      (await call('/properties/' + newWithMap.body.id + '/mapping')).body
+        .features.length,
+      2,
+    );
+    const failedWithMap = await call('/properties', 'POST', {
+      producer_id: p2.body.id,
+      name: 'Não deve persistir',
+      municipality: 'Teste / RS',
+      area_ha: 100,
+      tenure: 'Própria',
+      mapping: [{ ...cropArea, parent_id: property.body.id }],
+      map_revision: 0,
+    });
+    assert.equal(failedWithMap.status, 400);
+    assert.equal(
+      (await call('/producers/' + p2.body.id + '/overview')).body.properties
+        .length,
+      1,
+      'Cadastro e mapa são atômicos.',
+    );
     const audit = (await call('/audit')).body;
     for (const action of [
       'upload',
@@ -614,6 +748,11 @@ test('API integrada: persistência SQL, perfis, documentos, conferência, revis�
           .latitude,
       ),
       pin.latitude,
+    );
+    assert.equal((await call(mappingPath)).body.features[1].crop, 'Milho');
+    assert.equal(
+      (await call(mappingPath + '?revision=1')).body.features[1].crop,
+      'Soja',
     );
     assert.equal(persisted.documents[0].sha256, detail.documents[0].sha256);
     assert.equal(persisted.request.data.principal, 120000);

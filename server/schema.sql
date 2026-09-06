@@ -50,3 +50,11 @@ CREATE INDEX IF NOT EXISTS requests_producer ON requests(producer_id);
 CREATE INDEX IF NOT EXISTS analyses_request ON analyses(request_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS audit_entity ON audit(entity_type,entity_id);
 INSERT INTO schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;
+ALTER TABLE properties ADD COLUMN IF NOT EXISTS map_revision integer NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS property_map_versions (
+ property_id text NOT NULL REFERENCES properties(id), revision integer NOT NULL CHECK(revision > 0),
+ features jsonb NOT NULL, summary jsonb NOT NULL, property_snapshot jsonb NOT NULL,
+ created_by text NOT NULL REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(property_id,revision)
+);
+INSERT INTO schema_migrations(version) VALUES(2) ON CONFLICT DO NOTHING;

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { fields, required } from '../server/analysis.mjs';
 import { pointOf } from './property-map';
+import { MappingRecord } from './mapping-record';
 
 type Row = Record<string, any>;
 export type ProducerOverviewData = {
@@ -236,8 +237,19 @@ export function ProducerOverview({
   for (const property of properties) {
     const missing = [
       !pointOf(property) && 'localização',
-      !property.car && 'CAR',
-      !property.registry && 'matrícula/contrato',
+      !property.car &&
+        !property.mapping?.features.some((f: Row) => f.car) &&
+        'CAR',
+      !property.registry &&
+        !property.mapping?.features.some((f: Row) => f.registry) &&
+        'matrícula/contrato',
+      !property.mapping?.features.some((f: Row) => f.kind === 'total') &&
+        'perímetro mapeado',
+      !property.mapping?.features.some((f: Row) => f.kind === 'productive') &&
+        'área produtiva mapeada',
+      property.mapping?.features.some(
+        (f: Row) => f.kind === 'productive' && (!f.crop || !f.season),
+      ) && 'cultura/safra de talhão',
     ].filter(Boolean);
     if (missing.length)
       attention.push({
@@ -394,6 +406,30 @@ export function ProducerOverview({
                   rows={[
                     ['Município', p.municipality],
                     ['Área declarada', number(p.area_ha) + ' ha'],
+                    [
+                      'Área total mapeada',
+                      p.mapping
+                        ? number(p.mapping.summary.total_ha) + ' ha'
+                        : 'Pendente',
+                    ],
+                    [
+                      'Área produtiva mapeada',
+                      p.mapping
+                        ? number(p.mapping.summary.productive_ha) + ' ha'
+                        : 'Pendente',
+                    ],
+                    [
+                      'Culturas / safras informadas',
+                      p.mapping?.features
+                        .filter((f: Row) => f.kind === 'productive')
+                        .map(
+                          (f: Row) =>
+                            (f.crop || 'Cultura pendente') +
+                            ' · ' +
+                            (f.season || 'Safra pendente'),
+                        )
+                        .join('; ') || 'Não informadas',
+                    ],
                     ['Posse declarada', p.tenure],
                     ['CAR', p.car],
                     ['Matrícula / contrato', p.registry],
@@ -422,11 +458,20 @@ export function ProducerOverview({
         </div>
         {!properties.length && <p>Nenhuma propriedade cadastrada.</p>}
         <p className="producer-note">
-          Pontos localizam os imóveis; não representam perímetros ou hectares
-          mapeados. Área cultivável, polígonos, culturas por safra e recortes de
-          possíveis garantias ainda não estão cadastrados em módulos próprios
-          nesta versão.
+          Hectares declarados e mapeados são apresentados separadamente. Os
+          contornos, culturas e referências de matrícula são informados pelo
+          responsável; a sobreposição CAR/SIGEF não certifica esses dados. A
+          indicação e aceitação de possíveis garantias exigem análise própria.
         </p>
+      </Section>
+
+      <Section
+        title="Mapas e memoriais das propriedades"
+        subtitle="Contornos, legendas de matrícula, culturas e vértices da versão salva"
+      >
+        {properties.map((p) => (
+          <MappingRecord key={p.id} property={p} expanded />
+        ))}
       </Section>
 
       <Section

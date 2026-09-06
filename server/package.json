@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "pg": "8.16.3"
+    "@turf/area": "^7.3.5",
+    "@turf/kinks": "^7.3.5",
+    "pg": "8.16.3",
+    "polygon-clipping": "^0.15.7"
   }
 }

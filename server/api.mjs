@@ -3,6 +3,7 @@ import { audit, hashPassword, verifyPassword } from './db.mjs';
 import { analyze, fields } from './analysis.mjs';
 import { detectMime, extractDocument } from './documents.mjs';
 import { findMunicipalities, municipalityBounds } from './maps.mjs';
+import { validateMapping, mappingKml } from './geometry.mjs';
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const clean = (v, max = 200) =>
@@ -15,6 +16,52 @@ const one = async (c, sql, args, message = 'Registro não encontrado') => {
   if (!r.rows[0]) throw err(404, message);
   return r.rows[0];
 };
+async function saveMapping(c, user, id, features, expected) {
+  must(
+    Number.isInteger(expected) && expected >= 0,
+    'Informe a versão do mapa que foi aberta.',
+  );
+  const property = await one(
+    c,
+    'SELECT * FROM properties WHERE id=$1 FOR UPDATE',
+    [id],
+  );
+  if (property.map_revision !== expected)
+    throw err(
+      409,
+      'O mapa foi alterado por outro usuário. Reabra a propriedade antes de salvar.',
+    );
+  const mapping = validateMapping(features);
+  const producer = await one(c, 'SELECT name FROM producers WHERE id=$1', [
+    property.producer_id,
+  ]);
+  const revision = expected + 1;
+  await c.query(
+    'INSERT INTO property_map_versions(property_id,revision,features,summary,property_snapshot,created_by) VALUES($1,$2,$3,$4,$5,$6)',
+    [
+      id,
+      revision,
+      JSON.stringify(mapping.features),
+      JSON.stringify(mapping.summary),
+      JSON.stringify({
+        ...property,
+        producer_name: producer.name,
+        map_revision: revision,
+      }),
+      user.id,
+    ],
+  );
+  await c.query(
+    'UPDATE properties SET map_revision=$2,updated_at=now() WHERE id=$1',
+    [id, revision],
+  );
+  await audit(c, user, 'mapping_saved', 'property', id, {
+    before_revision: expected,
+    after_revision: revision,
+    summary: mapping.summary,
+  });
+  return { ...mapping, revision };
+}
 export const send = (res, status, value) => {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -204,6 +251,73 @@ export function createApi(db) {
       if (path !== '/api/password') writable(user);
     }
     if (path === '/api/me' && method === 'GET') return send(res, 200, user);
+    const mapMatch = path.match(
+      /^\/api\/properties\/([^/]+)\/mapping(?:\/(kml|versions))?$/,
+    );
+    if (mapMatch && method === 'GET') {
+      const id = mapMatch[1];
+      const property = await one(db, 'SELECT * FROM properties WHERE id=$1', [
+        id,
+      ]);
+      if (mapMatch[2] === 'versions')
+        return send(
+          res,
+          200,
+          (
+            await db.query(
+              'SELECT m.revision,m.summary,m.created_at,u.name AS actor_name FROM property_map_versions m LEFT JOIN users u ON u.id=m.created_by WHERE property_id=$1 ORDER BY revision DESC LIMIT 100',
+              [id],
+            )
+          ).rows,
+        );
+      const revision = u.searchParams.has('revision')
+        ? Number(u.searchParams.get('revision'))
+        : property.map_revision;
+      must(
+        Number.isInteger(revision) && revision >= 0,
+        'Versão de mapa inválida.',
+      );
+      if (!revision && !mapMatch[2])
+        return send(res, 200, { revision: 0, features: [], summary: null });
+      const mapping = await one(
+        db,
+        'SELECT * FROM property_map_versions WHERE property_id=$1 AND revision=$2',
+        [id, revision],
+        'Mapeamento não encontrado. Salve os polígonos antes de exportar.',
+      );
+      if (mapMatch[2] === 'kml') {
+        must(mapping.features.length, 'Nenhuma área mapeada nesta versão.');
+        const producer = {
+          name: mapping.property_snapshot.producer_name || 'Não informado',
+        };
+        res.writeHead(200, {
+          'Content-Type': 'application/vnd.google-earth.kml+xml; charset=utf-8',
+          'Content-Disposition': `attachment; filename="mapa-${id.replace(/[^a-zA-Z0-9-]/g, '')}-v${revision}.kml"`,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        return res.end(mappingKml(mapping, producer));
+      }
+      return send(res, 200, mapping);
+    }
+    if (mapMatch && !mapMatch[2] && method === 'PUT') {
+      const b = await json(req);
+      const result = await db.tx(async (c) => {
+        const saved = await saveMapping(
+          c,
+          user,
+          mapMatch[1],
+          b.features,
+          b.revision,
+        );
+        await c.query(
+          "UPDATE requests SET revision=revision+1,status='rascunho',updated_at=now() WHERE property_ids @> $1::jsonb",
+          [JSON.stringify([mapMatch[1]])],
+        );
+        return saved;
+      });
+      return send(res, 200, result);
+    }
     if (path === '/api/maps/municipalities' && method === 'GET')
       return send(
         res,
@@ -229,6 +343,14 @@ export function createApi(db) {
             [id],
           )
         ).rows;
+        const maps = (
+          await c.query(
+            'SELECT m.* FROM property_map_versions m JOIN properties p ON p.id=m.property_id AND p.map_revision=m.revision WHERE p.producer_id=$1',
+            [id],
+          )
+        ).rows;
+        for (const p of properties)
+          p.mapping = maps.find((m) => m.property_id === p.id) || null;
         const requests = (
           await c.query(
             'SELECT r.*,u.name AS consultant_name FROM requests r LEFT JOIN users u ON u.id=r.created_by WHERE r.producer_id=$1 ORDER BY r.updated_at DESC,r.id',
@@ -551,6 +673,8 @@ export function createApi(db) {
             clean(b.notes, 5000),
           ],
         );
+        if (b.mapping !== undefined)
+          await saveMapping(c, user, id, b.mapping, b.map_revision);
         if (method === 'PUT')
           await c.query(
             "UPDATE requests SET revision=revision+1,status='rascunho',updated_at=now() WHERE property_ids @> $1::jsonb",
@@ -820,6 +944,15 @@ export function createApi(db) {
             r.producer_id,
           ])
         ).rows.filter((p) => r.property_ids.includes(p.id));
+        for (const p of props)
+          p.mapping = p.map_revision
+            ? (
+                await c.query(
+                  'SELECT * FROM property_map_versions WHERE property_id=$1 AND revision=$2',
+                  [p.id, p.map_revision],
+                )
+              ).rows[0]
+            : null;
         await c.query(
           'INSERT INTO analyses(id,request_id,source_revision,result,snapshot,created_by) VALUES($1,$2,$3,$4,$5,$6)',
           [

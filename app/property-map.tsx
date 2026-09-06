@@ -1,8 +1,16 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type * as Leaflet from 'leaflet';
-import { MapPin, Search, LocateFixed, RotateCcw } from 'lucide-react';
+import {
+  MapPin,
+  Search,
+  LocateFixed,
+  RotateCcw,
+  Maximize,
+  Minimize,
+  Layers,
+} from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 
 type Row = Record<string, any>;
@@ -36,8 +44,8 @@ async function municipalApi<T>(path: string, signal: AbortSignal): Promise<T> {
   return data as T;
 }
 
-// Only municipal bounds go to the external service. Pin selection remains local
-// until the surrounding form explicitly saves it to the application API.
+// Municipal searches use IBGE. Public raster tiles receive viewport bounds only.
+// Pins and drawn geometry stay local until explicitly saved to the authenticated API.
 export function PropertyMap({
   properties,
   selectedId,
@@ -47,6 +55,16 @@ export function PropertyMap({
   onSelect,
   draft,
   formMode = false,
+  polygons = [],
+  drawing = [],
+  activeAreaId,
+  onDrawPoint,
+  onVertexMove,
+  onAreaSelect,
+  showVertices = true,
+  showRegistry = true,
+  children,
+  toolbar,
 }: {
   properties: Row[];
   selectedId?: string;
@@ -56,14 +74,94 @@ export function PropertyMap({
   onSelect?: (id: string) => void;
   draft?: Point | null;
   formMode?: boolean;
+  polygons?: Row[];
+  drawing?: number[][];
+  activeAreaId?: string;
+  onDrawPoint?: (point: Point) => void;
+  onVertexMove?: (index: number, point: Point) => void;
+  onAreaSelect?: (id: string) => void;
+  showVertices?: boolean;
+  showRegistry?: boolean;
+  children?: ReactNode;
+  toolbar?: ReactNode;
 }) {
   const element = useRef<HTMLDivElement>(null),
     map = useRef<Leaflet.Map | null>(null),
     layer = useRef<Leaflet.LayerGroup | null>(null);
   const library = useRef<typeof Leaflet | null>(null),
     tiles = useRef<Leaflet.TileLayer | null>(null);
-  const callbacks = useRef({ editable, onPick, onSelect });
-  callbacks.current = { editable, onPick, onSelect };
+  const wrapper = useRef<HTMLDivElement>(null),
+    fullscreenButton = useRef<HTMLButtonElement>(null);
+  const geometryLayer = useRef<Leaflet.LayerGroup | null>(null);
+  const officialLayers = useRef<Leaflet.TileLayer[]>([]);
+  const callbacks = useRef({
+    editable,
+    onPick,
+    onSelect,
+    onDrawPoint,
+    onVertexMove,
+    onAreaSelect,
+  });
+  callbacks.current = {
+    editable,
+    onPick,
+    onSelect,
+    onDrawPoint,
+    onVertexMove,
+    onAreaSelect,
+  };
+  const [base, setBase] = useState('streets'),
+    [expanded, setExpanded] = useState(false);
+  const [uf, setUf] = useState(''),
+    [carLayer, setCarLayer] = useState(false),
+    [sigefLayer, setSigefLayer] = useState(false);
+  const [officialError, setOfficialError] = useState<string[]>([]),
+    [zoom, setZoom] = useState(4);
+  const [layerAttempt, setLayerAttempt] = useState(0);
+  const states =
+    'AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO'.split(
+      ' ',
+    );
+  useEffect(() => {
+    const match = (municipality || '')
+      .toUpperCase()
+      .match(/(?:\/|[-, ]+)\s*([A-Z]{2})\s*$/);
+    setUf(match && states.includes(match[1]) ? match[1] : '');
+  }, [municipality]);
+  useEffect(() => {
+    if (!expanded) return;
+    const prior = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpanded(false);
+    };
+    const change = () => {
+      if (!document.fullscreenElement) setExpanded(false);
+    };
+    document.addEventListener('keydown', escape);
+    document.addEventListener('fullscreenchange', change);
+    return () => {
+      document.body.style.overflow = prior;
+      document.removeEventListener('keydown', escape);
+      document.removeEventListener('fullscreenchange', change);
+      fullscreenButton.current?.focus();
+    };
+  }, [expanded]);
+  async function toggleFullscreen() {
+    if (expanded) {
+      if (document.fullscreenElement === wrapper.current)
+        await document.exitFullscreen();
+      setExpanded(false);
+    } else {
+      setExpanded(true);
+      try {
+        await wrapper.current?.requestFullscreen?.();
+      } catch {
+        /* Fixed viewport fallback, including unsupported mobile browsers. */
+      }
+    }
+  }
+
   const [ready, setReady] = useState(false),
     [mapError, setMapError] = useState(''),
     [tileError, setTileError] = useState(false);
@@ -135,6 +233,7 @@ export function PropertyMap({
         if (controller.signal.aborted) return;
         setBounds(result.bounds);
         const city = choices.find((c) => String(c.id) === municipalId);
+        if (city) setUf(city.uf);
         setReference(
           city ? city.name + ' / ' + city.uf : 'Município consultado',
         );
@@ -159,26 +258,22 @@ export function PropertyMap({
           center: [-14, -53],
           zoom: 4,
           minZoom: 3,
-          maxZoom: 19,
+          maxZoom: 22,
           scrollWheelZoom: false,
         });
         map.current = current;
-        tiles.current = L.tileLayer(
-          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          {
-            maxZoom: 19,
-            attribution:
-              '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-            referrerPolicy: 'strict-origin-when-cross-origin',
-          },
-        )
-          .on('tileerror', () => {
-            if (live) setTileError(true);
-          })
-          .addTo(current);
         layer.current = L.layerGroup().addTo(current);
+        geometryLayer.current = L.layerGroup().addTo(current);
+        current.on('zoomend', () => setZoom(current.getZoom()));
         L.control.scale({ imperial: false }).addTo(current);
         current.on('click', (e: Leaflet.LeafletMouseEvent) => {
+          if (callbacks.current.onDrawPoint) {
+            callbacks.current.onDrawPoint({
+              latitude: e.latlng.lat,
+              longitude: e.latlng.wrap().lng,
+            });
+            return;
+          }
           if (callbacks.current.editable)
             callbacks.current.onPick?.({
               latitude: e.latlng.lat,
@@ -204,6 +299,183 @@ export function PropertyMap({
     };
   }, []);
 
+  useEffect(() => {
+    const L = library.current,
+      current = map.current;
+    if (!ready || !L || !current) return;
+    setTileError(false);
+    const satellite = base === 'satellite';
+    const tile = L.tileLayer(
+      satellite
+        ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {
+        maxZoom: 22,
+        maxNativeZoom: satellite ? 19 : 19,
+        attribution: satellite
+          ? 'Esri World Imagery · Esri, Vantor, Earthstar Geographics, GIS User Community'
+          : '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+    )
+      .on('tileerror', () => setTileError(true))
+      .addTo(current);
+    tile.setZIndex(0);
+    tiles.current = tile;
+    return () => {
+      tile.off();
+      tile.remove();
+    };
+  }, [ready, base]);
+  useEffect(() => {
+    const L = library.current,
+      current = map.current;
+    if (!ready || !L || !current) return;
+    setOfficialError([]);
+    officialLayers.current = [];
+    if (!uf || zoom < 12) return;
+    const add = (url: string, layers: string, label: string) => {
+      const tile = L.tileLayer.wms(url, {
+        layers,
+        format: 'image/png',
+        transparent: true,
+        version: '1.1.1',
+        maxZoom: 22,
+        opacity: 0.65,
+        attribution: label,
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      });
+      tile
+        .setZIndex(5)
+        .on('tileerror', () =>
+          setOfficialError((xs) => (xs.includes(label) ? xs : [...xs, label])),
+        )
+        .addTo(current);
+      officialLayers.current.push(tile);
+    };
+    if (carLayer)
+      add(
+        'https://geoserver.car.gov.br/geoserver/sicar/wms',
+        'sicar_imoveis_' + uf.toLowerCase(),
+        'CAR · SICAR/SFB',
+      );
+    if (sigefLayer) {
+      const name = 'certificada_sigef_particular_' + uf.toLowerCase();
+      add(
+        'https://acervofundiario.incra.gov.br/i3geo/ogc.php?tema=' + name,
+        name,
+        'SIGEF particular · INCRA',
+      );
+    }
+    return () => {
+      officialLayers.current.forEach((t) => {
+        t.off();
+        t.remove();
+      });
+      officialLayers.current = [];
+    };
+  }, [ready, uf, carLayer, sigefLayer, zoom < 12, layerAttempt]);
+  useEffect(() => {
+    const L = library.current,
+      group = geometryLayer.current;
+    if (!ready || !L || !group) return;
+    group.clearLayers();
+    const pointLabel = (text: string) => {
+      const el = document.createElement('span');
+      el.textContent = text;
+      return el;
+    };
+    polygons.forEach((f) => {
+      if (!f.coordinates?.length) return;
+      const points = f.coordinates.map(
+        ([lng, lat]: number[]) => [lat, lng] as [number, number],
+      );
+      const color = f.kind === 'total' ? '#3399ff' : '#22bb55';
+      const poly = L.polygon(points, {
+        color,
+        fillOpacity: 0.14,
+        weight: f.id === activeAreaId ? 4 : 2,
+        interactive: !onDrawPoint,
+      });
+      poly.bindTooltip(
+        pointLabel(
+          `${f.name} · ${Number(f.area_ha || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} ha${showRegistry ? ' · Matrícula: ' + (f.registry || 'não informada') : ''}`,
+        ),
+      );
+      poly
+        .on('click', (e: Leaflet.LeafletMouseEvent) => {
+          L.DomEvent.stopPropagation(e.originalEvent);
+          callbacks.current.onAreaSelect?.(f.id);
+        })
+        .addTo(group);
+      if (showVertices)
+        points.slice(0, -1).forEach((point: [number, number], i: number) =>
+          L.circleMarker(point, {
+            radius: 3,
+            color,
+            fillOpacity: 1,
+            interactive: !onDrawPoint,
+          })
+            .bindTooltip(
+              pointLabel(
+                `V${String(i + 1).padStart(3, '0')} · Lat ${point[0].toFixed(7)} · Lon ${point[1].toFixed(7)}`,
+              ),
+            )
+            .addTo(group),
+        );
+    });
+    if (drawing.length) {
+      const points = drawing.map(
+        ([lng, lat]) => [lat, lng] as [number, number],
+      );
+      if (points.length >= 3)
+        L.polygon(points, {
+          color: '#f5b942',
+          weight: 3,
+          dashArray: '6 5',
+          fillOpacity: 0.12,
+          interactive: false,
+        }).addTo(group);
+      else
+        L.polyline(points, { color: '#f5b942', interactive: false }).addTo(
+          group,
+        );
+      points.forEach((point, i) => {
+        const marker = L.marker(point, {
+          draggable: !!onVertexMove,
+          icon: L.divIcon({
+            className: 'map-vertex',
+            html: `<span>${i + 1}</span>`,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
+          }),
+        });
+        marker.bindTooltip(
+          pointLabel(
+            `V${String(i + 1).padStart(3, '0')} · ${point[0].toFixed(7)}, ${point[1].toFixed(7)}`,
+          ),
+        );
+        marker
+          .on('dragend', () => {
+            const p = marker.getLatLng().wrap();
+            callbacks.current.onVertexMove?.(i, {
+              latitude: p.lat,
+              longitude: p.lng,
+            });
+          })
+          .addTo(group);
+      });
+    }
+  }, [
+    ready,
+    polygons,
+    drawing,
+    activeAreaId,
+    onDrawPoint,
+    onVertexMove,
+    showVertices,
+    showRegistry,
+  ]);
   useEffect(() => {
     const L = library.current,
       group = layer.current;
@@ -260,6 +532,17 @@ export function PropertyMap({
   }, [ready, selectedId, latitude, longitude, bounds]);
 
   function centerPin() {
+    if (polygons.length && map.current) {
+      map.current.fitBounds(
+        polygons.flatMap((f) =>
+          f.coordinates.map(
+            ([lng, lat]: number[]) => [lat, lng] as [number, number],
+          ),
+        ),
+        { padding: [30, 30], maxZoom: 18 },
+      );
+      return;
+    }
     const point = draft || selectedPoint;
     if (point && map.current)
       map.current.setView([point.latitude, point.longitude], 16);
@@ -272,7 +555,41 @@ export function PropertyMap({
     setLookupAttempt((n) => n + 1);
   }
   return (
-    <div className={'producer-map' + (formMode ? ' producer-map-form' : '')}>
+    <div
+      ref={wrapper}
+      className={
+        'producer-map' +
+        (formMode ? ' producer-map-form' : '') +
+        (expanded ? ' producer-map-fullscreen' : '')
+      }
+    >
+      <div className="producer-map-layers producer-screen-actions">
+        <div className="map-base-switch" aria-label="Base do mapa">
+          <button
+            type="button"
+            aria-pressed={base === 'streets'}
+            onClick={() => setBase('streets')}
+          >
+            Mapa
+          </button>
+          <button
+            type="button"
+            aria-pressed={base === 'satellite'}
+            onClick={() => setBase('satellite')}
+          >
+            Satélite
+          </button>
+        </div>
+        <button
+          type="button"
+          ref={fullscreenButton}
+          className="r-btn r-btn-secondary"
+          onClick={() => void toggleFullscreen()}
+        >
+          {expanded ? <Minimize size={16} /> : <Maximize size={16} />}{' '}
+          {expanded ? 'Sair da tela cheia' : 'Tela cheia'}
+        </button>
+      </div>
       <div className="producer-map-search">
         <label>
           <span>Município / UF</span>
@@ -302,7 +619,7 @@ export function PropertyMap({
           type="button"
           className="r-btn r-btn-secondary"
           onClick={centerPin}
-          disabled={!draft && !selectedPoint && !bounds}
+          disabled={!draft && !selectedPoint && !bounds && !polygons.length}
         >
           <LocateFixed size={15} />
           Centralizar
@@ -332,6 +649,63 @@ export function PropertyMap({
           {lookupError}
         </p>
       )}
+      <details className="producer-official-layers producer-screen-actions">
+        <summary>
+          <Layers size={16} /> Camadas oficiais · CAR / SIGEF
+        </summary>
+        <div className="producer-map-layers">
+          <label>
+            UF{' '}
+            <select
+              aria-label="UF das camadas oficiais"
+              value={uf}
+              onChange={(e) => setUf(e.target.value)}
+            >
+              <option value="">Selecione</option>
+              {states.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={carLayer}
+              onChange={(e) => setCarLayer(e.target.checked)}
+            />{' '}
+            CAR · SICAR/SFB
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={sigefLayer}
+              onChange={(e) => setSigefLayer(e.target.checked)}
+            />{' '}
+            SIGEF · INCRA (particular)
+          </label>
+        </div>
+        <p>
+          Sobreposição de referência. Não vincula automaticamente CAR,
+          certificação ou matrícula ao produtor.
+        </p>
+        {(carLayer || sigefLayer) && (!uf || zoom < 12) && (
+          <p role="status">
+            {!uf
+              ? 'Escolha a UF.'
+              : 'Aproxime o mapa para carregar as camadas (zoom 12 ou maior).'}
+          </p>
+        )}
+        {officialError.length > 0 && (
+          <p role="status">
+            {officialError.join(' / ')}: falha no serviço externo. A ausência de
+            contorno não comprova ausência de cadastro.{' '}
+            <button type="button" onClick={() => setLayerAttempt((n) => n + 1)}>
+              Tentar novamente
+            </button>
+          </p>
+        )}
+      </details>
+      {toolbar}
       <div className="producer-map-surface">
         <div
           ref={element}
@@ -363,11 +737,13 @@ export function PropertyMap({
       <div className="producer-map-caption">
         <MapPin size={16} />
         <span>
-          {editable
-            ? 'Clique no local da propriedade. Arraste o pin para ajustar; salve para confirmar.'
-            : selectedPoint
-              ? 'Pontos cadastrados do produtor. Selecione uma propriedade para ver os dados.'
-              : 'Localização da propriedade ainda não marcada.'}
+          {onDrawPoint
+            ? 'Clique para adicionar vértices. Arraste os pontos numerados para ajustar o contorno.'
+            : editable
+              ? 'Clique no local da propriedade. Arraste o pin para ajustar; salve para confirmar.'
+              : selectedPoint
+                ? 'Pontos cadastrados do produtor. Selecione uma propriedade para ver os dados.'
+                : 'Localização da propriedade ainda não marcada.'}
           {reference && (
             <small>
               Referência municipal: {reference} · IBGE. O município não define a
@@ -376,6 +752,13 @@ export function PropertyMap({
           )}
         </span>
       </div>
+      {base === 'satellite' && (
+        <p className="producer-map-source">
+          Imagem de referência Esri World Imagery; a data varia por região. A
+          cultura atual deve ser informada no cadastro.
+        </p>
+      )}
+      {children}
     </div>
   );
 }

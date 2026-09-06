@@ -29,8 +29,8 @@ usam as APIs de [localidades](https://servicodados.ibge.gov.br/api/docs/localida
 e [malhas do IBGE](https://servicodados.ibge.gov.br/api/docs/malhas?versao=3),
 com cache de 24 horas e timeout. Nenhum nome/CPF de produtor ou pin é enviado ao
 IBGE. Falhas da base e da consulta aparecem com possibilidade de tentar novamente;
-coordenadas também podem ser digitadas. Satélite continua disponível pelo link
-externo. [Política dos tiles OSM](https://operations.osmfoundation.org/policies/tiles/).
+coordenadas também podem ser digitadas. Satélite e tela cheia estão disponíveis
+no próprio mapa e no cadastro. [Política dos tiles OSM](https://operations.osmfoundation.org/policies/tiles/).
 
 - Cadastro e edição de produtores (CPF/CNPJ opcional com validação de dígitos).
 - Propriedades, área, posse, município, CAR/matrícula declarados e ponto geográfico.
@@ -92,7 +92,9 @@ O indicador de caixa desta aplicação é simplificado, não uma implementação
 cada índice contábil dessa referência. Fórmulas e entradas ficam no dossiê.
 
 Não há score, aprovação automática, concessão de crédito, consulta a dívidas reais,
-bureau, CAR/SICAR, SIGEF, séries climáticas ou mapas de solo. Informações técnicas
+bureau, consulta cadastral automática a CAR/SIGEF, séries climáticas ou mapas de solo.
+As camadas públicas CAR/SIGEF são sobreposições de referência, sem vínculo
+automático com o produtor e sem consulta à situação registral. Informações técnicas
 são registradas pelo usuário e sustentadas por documentos. A leitura automática
 não comprova autenticidade documental. Parecer favorável exige análise atual e
 completa, imóvel vinculado, fontes financeiras e todos os documentos conferidos;
@@ -143,7 +145,7 @@ npm start
 O servidor só fica pronto após migração idempotente e bootstrap. `/health` verifica
 consulta ao banco, retornando `operational` e `postgresql`. Docker instala utilitários
 OCR e roda o servidor como usuário sem privilégios. A imagem final instala somente
-o driver PostgreSQL e suas dependências; ferramentas de build e pacotes de SSR
+o driver PostgreSQL, bibliotecas de geometria e suas dependências; ferramentas de build e pacotes de SSR
 do protótipo não são carregados no runtime. O build Railway é independente
 de Sites. `npm run dev` é apenas a interface Vite; o uso completo local exige o
 servidor Node e o PostgreSQL, ou um proxy de `/api` configurado pelo desenvolvedor.
@@ -161,3 +163,35 @@ invalidação das análises dependentes e persistência do pin após reabrir o b
 O fluxo de pin usa os perfis atuais; a matriz futura de quatro perfis ainda não
 está ativada. Matrículas estruturadas, polígonos, culturas por safra e aceitação de
 garantias não são gerados automaticamente pela ficha.
+
+
+## Mapa, áreas e KML
+
+- **Mapa / Satélite** usa OpenStreetMap ou [Esri World Imagery](https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer), com atribuição permanente. Imagem de referência; data variável por região. A cultura não é inferida da imagem.
+- **Tela cheia** expande a mesma instância do mapa, incluindo ferramentas, dados, filtros e editor. Escape fecha. Há fallback de viewport para navegadores sem Fullscreen API.
+- **Área total**: contorno, nome, matrícula, cartório/comarca, titular informado, CAR, código SIGEF e fonte/observações. As referências são declaradas, sem consulta de cartório ou certificação automática.
+- **Área produtiva / cultura**: talhão contido em uma área total da mesma propriedade, cultura atual e safra/período. Herda as referências documentais do perímetro pai. Campos ausentes continuam pendentes.
+- Clique para desenhar vértices, arraste para corrigir, desfaça pontos ou edite latitude/longitude na tabela. Conclua a área; salve o mapeamento (ou o cadastro completo, quando estiver no formulário).
+- Filtros por nome, tipo, cultura, matrícula, CAR e SIGEF cadastrados. É possível alternar a exibição dos vértices e das legendas de matrícula.
+- Cálculo geodésico aproximado via Turf, coordenadas WGS84/EPSG:4326. Hectares declarados continuam separados dos hectares mapeados. O saldo total menos produtivo significa **sem classificação produtiva**, não área automaticamente imprópria ao cultivo.
+- Polígonos simples: até 80 áreas, 500 vértices por área e 5.000 vértices por propriedade. Furos/multipolígonos e importação de arquivos externos não integram esta entrega. Áreas desconexas podem ser cadastradas como polígonos separados.
+- O servidor rejeita coordenadas inválidas, anéis cruzados, vértices duplicados, área zero, talhões fora do perímetro e sobreposição entre áreas do mesmo tipo. Bordas comuns são permitidas. A validação de sobreposição é por propriedade; não certifica ausência de sobreposição com outros imóveis.
+- **Baixar KML** exporta todos os polígonos da versão salva, mesmo com filtros ativos: pastas de área total/área produtiva, cores distintas, pontos V001… com coordenadas, legenda e ExtendedData contendo matrícula, cartório, titular, CAR/SIGEF, cultura, safra, áreas e origem. XML escapado; anéis fechados, longitude antes de latitude, orientação externa anti-horária.
+- **Versões do mapa** permite consultar e exportar versões anteriores. PostgreSQL guarda cada versão com autor/data, geometria e cadastro do imóvel naquele momento. Conflitos entre editores retornam 409; não há sobrescrita silenciosa.
+- A gravação no cadastro é transacional com o mapa; uma geometria inválida não deixa um cadastro parcial. O mapa também pode ser salvo isoladamente, sem sobrescrever o cadastro/pin.
+- Alterações invalidam análises das solicitações que vinculam o imóvel. Novas análises preservam as versões dos mapas nos snapshots. A ficha do produtor e o dossiê mostram croquis, legendas, culturas e tabelas de vértices, com download do KML da versão correspondente.
+- Migração 2 aditiva/idempotente: `properties.map_revision` e `property_map_versions`. Sem remoção de registros existentes. Analista/administrador podem gravar; perfil consulta pode visualizar e baixar o KML autenticado.
+
+### Sobreposições oficiais
+
+As camadas são carregadas diretamente como imagens WMS após escolher UF e aproximar para zoom 12 ou maior. Não enviam nomes/CPF, arquivos documentais ou geometrias privadas aos provedores; as requisições contêm os parâmetros públicos de camada e enquadramento do mapa. A aplicação não copia cadastros externos automaticamente nem inclui as imagens oficiais no KML. Falhas de carregamento aparecem na interface. Sem contorno visível não significa sem cadastro ou sem restrições.
+
+| Camada | Fonte e endpoint |
+|---|---|
+| CAR | SICAR / Serviço Florestal Brasileiro: `https://geoserver.car.gov.br/geoserver/sicar/wms`, camada `sicar_imoveis_<uf>` |
+| SIGEF particular | Acervo Fundiário / INCRA: `https://acervofundiario.incra.gov.br/i3geo/ogc.php?tema=certificada_sigef_particular_<uf>`, camada de mesmo nome |
+| Matrículas | Polígonos e dados informados no próprio cadastro, sem integração com o cartório |
+
+Referências: [consulta CAR](https://www.car.gov.br/), [serviço de coordenadas de imóveis certificados do INCRA](https://www.gov.br/pt-br/servicos/obter-coordenadas-e-baixar-os-arquivos-dos-imoveis-ruras-certificados), [KML Reference](https://developers.google.com/kml/documentation/kmlreference).
+
+Os testes incluem geometria côncava, cruzamentos/sobreposição, polígonos adjacentes, área em hectares, eixos/fechamento/escape XML do KML, RBAC, gravação atômica, conflito entre versões, isolamento por produtor, invalidação de análise e persistência das versões após reabrir o banco. Os WMS CAR/RS e SIGEF particular/RS foram consultados com GetCapabilities e GetMap reais nesta entrega; disponibilidade em outras UFs depende do provedor.

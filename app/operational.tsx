@@ -46,7 +46,9 @@ import {
   TechnicalSummary,
   TechnicalOverview,
 } from './technical-workspace';
-import { PropertyMap, pointOf, type Point } from './property-map';
+import { pointOf, type Point } from './property-map';
+import { AreaMapping, type MappingDraft } from './area-mapping';
+import { MappingRecord } from './mapping-record';
 import {
   ProducerIdentity,
   ProducerOverview,
@@ -759,6 +761,7 @@ export default function Operational() {
                     setModal({ kind: 'property', item: property })
                   }
                   onSaveLocation={saveLocation}
+                  onMapSaved={refresh}
                   onNavigate={go}
                   onStart={() =>
                     setModal({
@@ -1730,14 +1733,39 @@ function EditForm({
     item.longitude == null ? '' : String(item.longitude),
   );
   const draftPoint = pointOf({ latitude, longitude });
+  const [mappingDraft, setMappingDraft] = useState<MappingDraft>({
+    features: [],
+    revision: 0,
+    ready: false,
+    drawing: false,
+    dirty: false,
+  });
+  const [mappingError, setMappingError] = useState('');
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget,
       v = values(form);
     let payload: Row = v;
+    if (
+      modal.kind === 'property' &&
+      (!mappingDraft.ready || mappingDraft.drawing)
+    ) {
+      setMappingError(
+        mappingDraft.drawing
+          ? 'Conclua ou cancele o desenho da área antes de salvar o cadastro.'
+          : 'Aguarde o carregamento do mapeamento salvo.',
+      );
+      return;
+    }
     if (modal.kind === 'property')
       payload = {
         ...v,
+        ...(mappingDraft.dirty
+          ? {
+              mapping: mappingDraft.features,
+              map_revision: mappingDraft.revision,
+            }
+          : {}),
         area_ha: numeric(v.area_ha),
         latitude: numeric(v.latitude),
         longitude: numeric(v.longitude),
@@ -1769,6 +1797,11 @@ function EditForm({
   };
   return (
     <form className="r-form r-edit-form" onSubmit={submit}>
+      {mappingError && (
+        <p className="r-wide r-alert r-error" role="alert">
+          {mappingError}
+        </p>
+      )}
       {modal.kind === 'producer' && (
         <>
           <Field
@@ -1865,7 +1898,7 @@ function EditForm({
             </small>
           </label>
           <Field
-            label="Área total (ha)"
+            label="Área total declarada (ha)"
             name="area_ha"
             value={item.area_ha}
             type="number"
@@ -1894,8 +1927,11 @@ function EditForm({
             maxLength={200}
           />
           <div className="r-wide producer-form-map">
-            <h3>Localização da propriedade</h3>
-            <PropertyMap
+            <h3>Localização, áreas e culturas da propriedade</h3>
+            <AreaMapping
+              property={item.id ? item : undefined}
+              writable={!busy}
+              onDraftChange={setMappingDraft}
               formMode
               properties={[
                 {
@@ -1907,8 +1943,8 @@ function EditForm({
               ]}
               selectedId="form-property"
               municipality={mapMunicipality}
-              editable
-              draft={draftPoint}
+              editablePin
+              pin={draftPoint}
               onPick={(point) => {
                 setLatitude(point.latitude.toFixed(7));
                 setLongitude(point.longitude.toFixed(7));
@@ -2680,6 +2716,9 @@ function Dossier({ detail, analysis }: { detail: Detail; analysis: Row }) {
               CAR: {x.car || 'não informado'} · Matrícula/contrato:{' '}
               {x.registry || 'não informado'}
             </p>
+          ))}
+          {snap.properties.map((x: Row) => (
+            <MappingRecord key={x.id} property={x} expanded />
           ))}
         </section>
         <section>

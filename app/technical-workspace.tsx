@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { PropertyMap, pointOf, type Point } from './property-map';
+import { pointOf, type Point } from './property-map';
+import { AreaMapping } from './area-mapping';
 import {
   AlertTriangle,
   BarChart3,
@@ -405,6 +406,7 @@ export function TechnicalOverview({
   onProperty,
   onEditProperty,
   onSaveLocation,
+  onMapSaved,
   onNavigate,
   onStart,
   writable,
@@ -418,6 +420,7 @@ export function TechnicalOverview({
   onProperty: (id: string) => void;
   onEditProperty: (property: RecordData) => void;
   onSaveLocation: (property: RecordData, point: Point) => Promise<void>;
+  onMapSaved: () => Promise<void>;
   onNavigate: (section: string) => void;
   onStart: () => void;
   writable: boolean;
@@ -438,6 +441,7 @@ export function TechnicalOverview({
           onSelect={onProperty}
           onEdit={onEditProperty}
           onSaveLocation={onSaveLocation}
+          onMapSaved={onMapSaved}
           onStart={onStart}
           writable={writable}
           hasProducers={hasProducers}
@@ -464,18 +468,6 @@ export function TechnicalOverview({
     </>
   );
 }
-function satelliteUrl(lat: number, lng: number) {
-  return (
-    'https://www.google.com/maps/@?' +
-    new URLSearchParams({
-      api: '1',
-      map_action: 'map',
-      center: lat + ',' + lng,
-      zoom: '16',
-      basemap: 'satellite',
-    }).toString()
-  );
-}
 function TechnicalMap({
   properties,
   selected,
@@ -483,6 +475,7 @@ function TechnicalMap({
   onEdit,
   onStart,
   onSaveLocation,
+  onMapSaved,
   writable,
   hasProducers,
 }: {
@@ -492,6 +485,7 @@ function TechnicalMap({
   onEdit: (property: RecordData) => void;
   onStart: () => void;
   onSaveLocation: (property: RecordData, point: Point) => Promise<void>;
+  onMapSaved: () => Promise<void>;
   writable: boolean;
   hasProducers: boolean;
 }) {
@@ -499,6 +493,7 @@ function TechnicalMap({
     [draft, setDraft] = useState<Point | null>(null);
   const [saving, setSaving] = useState(false),
     [error, setError] = useState('');
+  const [mappingEditing, setMappingEditing] = useState(false);
   const point = pointOf(selected);
   async function save() {
     if (!selected || !draft || saving) return;
@@ -526,18 +521,7 @@ function TechnicalMap({
           </p>
         </div>
         <div className="producer-screen-actions">
-          {point && (
-            <a
-              className="technical-source-link"
-              href={satelliteUrl(point.latitude, point.longitude)}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <Layers3 size={15} />
-              Satélite
-            </a>
-          )}
-          {selected && writable && !editing && (
+          {selected && writable && !editing && !mappingEditing && (
             <button
               type="button"
               onClick={() => {
@@ -557,14 +541,18 @@ function TechnicalMap({
           )}
         </div>
       </header>
-      <PropertyMap
+      <AreaMapping
+        property={selected}
+        writable={writable}
+        onSaved={onMapSaved}
+        onEditingChange={setMappingEditing}
         properties={properties}
         selectedId={selected?.id}
         municipality={selected?.municipality}
-        editable={editing && !saving}
+        editablePin={editing && !saving}
         onPick={setDraft}
         onSelect={editing ? undefined : onSelect}
-        draft={draft}
+        pin={draft}
       />
       {editing && (
         <div className="producer-map-save producer-screen-actions">
@@ -608,7 +596,7 @@ function TechnicalMap({
           {properties.map((p) => (
             <button
               key={p.id}
-              disabled={editing}
+              disabled={editing || mappingEditing}
               className={p.id === selected?.id ? 'active' : ''}
               onClick={() => onSelect(p.id)}
             >
@@ -627,6 +615,7 @@ function TechnicalMap({
         <button
           type="button"
           className="text-action producer-screen-actions"
+          disabled={editing || mappingEditing}
           onClick={() => onEdit(selected)}
         >
           Editar cadastro completo e localização
